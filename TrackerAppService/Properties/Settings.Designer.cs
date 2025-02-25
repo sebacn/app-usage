@@ -87,5 +87,17 @@ namespace TrackerAppService.Properties {
                 this["appUsageLimits"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string influxClientCertificate {
+            get {
+                return ((string)(this["influxClientCertificate"]));
+            }
+            set {
+                this["influxClientCertificate"] = value;
+            }
+        }
     }
 }

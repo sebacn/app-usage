@@ -16,25 +16,22 @@ using System.Windows.Forms;
 using InfluxDB.Client;
 using InfluxDB.Client.Api.Domain;
 using InfluxDB.Client.Writes;
+using System.Security.Cryptography.X509Certificates;
 
 namespace TrackerAppService
 {
     public partial class TrackerAppService : ServiceBase
     {
-        private System.Timers.Timer timer;
-        //private string logFilePath = "C:\\Temp\\AppUsage.log";
-        //private string settingsFilePath = "C:\\Temp\\TrackedApps.ini";
-        private Dictionary<string, TimeSpan> appUsage = new Dictionary<string, TimeSpan>();
+        private System.Timers.Timer timer, timer1min;
+        private Dictionary<string, TimeSpan> appUsedPerDay = new Dictionary<string, TimeSpan>();
         private Dictionary<string, TimeSpan[]> appUsageLimits = new Dictionary<string, TimeSpan[]>();
         private HashSet<string> warnedApps = new HashSet<string>();
-        private string lastApp = null;
+        //private string lastApp = null;
         private DateTime lastStartTime;
         private HashSet<string> trackedApps = new HashSet<string>();
         private string registryPath = "SOFTWARE\\TrackerAppService";
         private DateTime lastResetDate = DateTime.Now.Date;
-        //public static IntPtr WTS_CURRENT_SERVER_HANDLE = IntPtr.Zero;
 
-        //string appFolder = AppDomain.CurrentDomain.BaseDirectory;
         string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
 
         public TrackerAppService()
@@ -43,35 +40,60 @@ namespace TrackerAppService
             
         }
 
-        private void SendDataToInfluxDB(HashSet<string> appList)
+        private bool InfluxDBConfigOk()
         {
-            if (   string.IsNullOrEmpty(Properties.Settings.Default.influxUrl) 
-                || string.IsNullOrEmpty(Properties.Settings.Default.influxToken) 
-                || string.IsNullOrEmpty(Properties.Settings.Default.influxOrg) 
-                || string.IsNullOrEmpty(Properties.Settings.Default.influxBucket))
+            return (!string.IsNullOrEmpty(Properties.Settings.Default.influxUrl)
+                && !string.IsNullOrEmpty(Properties.Settings.Default.influxToken)
+                && !string.IsNullOrEmpty(Properties.Settings.Default.influxOrg)
+                && !string.IsNullOrEmpty(Properties.Settings.Default.influxBucket));
+        }
+
+        private void SendDataToInfluxDB()
+        {
+            if (!InfluxDBConfigOk())
             {
                 return;
-            }                
+            }
 
             try
             {
-                using (var client = new InfluxDBClient(Properties.Settings.Default.influxUrl, Properties.Settings.Default.influxToken))
+                X509Certificate2 x509Certificate2 = null;
+
+                if (!string.IsNullOrEmpty(Properties.Settings.Default.influxClientCertificate))
+                {
+                    x509Certificate2 = new X509Certificate2(Properties.Settings.Default.influxClientCertificate, "", X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
+                }
+
+                var options = new InfluxDBClientOptions(Properties.Settings.Default.influxUrl)
+                {
+                    Token = Properties.Settings.Default.influxToken,
+                    Org = Properties.Settings.Default.influxOrg,
+                    Bucket = Properties.Settings.Default.influxBucket,
+                    ClientCertificates = x509Certificate2 != null ? new X509CertificateCollection() { x509Certificate2 } : null
+                };
+
+                using (var client = new InfluxDBClient(options)) // Properties.Settings.Default.influxUrl, Properties.Settings.Default.influxToken))
                 {
                     using (var writeApi = client.GetWriteApi())
                     {
+                        DateTime now = DateTime.Now;
+                        int dow = (int)now.DayOfWeek;
+
                         List<PointData> lpd = new List<PointData>();
 
-                        foreach (var entry in appList)
+                        foreach (var entry in appUsageLimits)
                         {
                             var point = PointData.Measurement("tracker-app")
-                                .Tag("application", entry)
-                                .Field("duration_seconds", 1)
+                                .Tag("host", Environment.MachineName)
+                                .Tag("application", entry.Key)
+                                .Field("run-time-minutes", appUsedPerDay.ContainsKey(entry.Key)? appUsedPerDay[entry.Key].TotalMinutes : 0)
+                                .Field("limit-time-minutes", entry.Value[dow].TotalMinutes)
                                 .Timestamp(DateTime.UtcNow, WritePrecision.S);
 
                             lpd.Add(point);
                         }
 
-                        writeApi.WritePoints(lpd, Properties.Settings.Default.influxBucket, Properties.Settings.Default.influxOrg);
+                        writeApi.WritePoints(lpd); //, Properties.Settings.Default.influxBucket, Properties.Settings.Default.influxOrg);
                     }
                 }
             }
@@ -90,17 +112,20 @@ namespace TrackerAppService
         {
             Properties.Settings.Default.Save();
 
-
             LoadTrackedApps();
             LoadUsageFromRegistry();
-            LoadLastResetDateFromRegistry();
 
             timer = new System.Timers.Timer(10000); // Logs every 10 seconds
             timer.Elapsed += TimerElapsed;
             timer.Start();
             lastStartTime = DateTime.Now;
 
-            
+            if (InfluxDBConfigOk())
+            {
+                timer1min = new System.Timers.Timer(60000); // Logs every 1 min
+                timer1min.Elapsed += Timer1minElapsed;
+                timer1min.Start();
+            }
         }
 
         private void LoadTrackedApps()
@@ -132,40 +157,11 @@ namespace TrackerAppService
 
             }
 
-            /*
-            if (System.IO.File.Exists(settingsFilePath))
-            {
-                trackedApps.Clear();
-
-                foreach (var line in System.IO.File.ReadAllLines(settingsFilePath))
-                {
-                    var parts = line.Split(',');
-                    if (parts.Length >= 1)
-                    {
-                        string appName = parts[0].Trim();
-                        trackedApps.Add(appName);
-
-                        if (parts.Length > 1 && TimeSpan.TryParse(parts[1].Trim(), out TimeSpan limit))
-                        {
-                            appUsageLimits[appName] = limit;
-                        }
-                        else
-                        {
-                            appUsageLimits[appName] = TimeSpan.FromHours(1); // Default 1 hour
-                        }
-                    }
-                }
-            }
-            else
-            { 
-                System.IO.File.Create(settingsFilePath).Dispose();
-            }
-            */
         }
 
         private void LoadUsageFromRegistry()
         {
-            appUsage.Clear();
+            appUsedPerDay.Clear();
 
             using (RegistryKey key = Registry.CurrentUser.OpenSubKey(registryPath))
             {
@@ -173,25 +169,18 @@ namespace TrackerAppService
                 {
                     foreach (string appName in key.GetValueNames())
                     {
-                        if (TimeSpan.TryParse(key.GetValue(appName).ToString(), out TimeSpan duration))
+                        if (appName == "LastResetDate")
                         {
-                            appUsage[appName] = duration;
+                            string resetDateValue = key.GetValue(appName) as string;
+                            if (!string.IsNullOrEmpty(resetDateValue) && DateTime.TryParse(resetDateValue, out DateTime resetDate))
+                            {
+                                lastResetDate = resetDate;
+                            }
                         }
-                    }
-                }
-            }
-        }
-
-        private void LoadLastResetDateFromRegistry()
-        {
-            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(registryPath))
-            {
-                if (key != null)
-                {
-                    string resetDateValue = key.GetValue("LastResetDate") as string;
-                    if (!string.IsNullOrEmpty(resetDateValue) && DateTime.TryParse(resetDateValue, out DateTime resetDate))
-                    {
-                        lastResetDate = resetDate;
+                        else if (TimeSpan.TryParse(key.GetValue(appName).ToString(), out TimeSpan duration))
+                        {
+                            appUsedPerDay[appName] = duration;
+                        }
                     }
                 }
             }
@@ -230,30 +219,30 @@ namespace TrackerAppService
                     EventLog.WriteEntry("TrackerAppService", $"Process running: {process.ProcessName} (Exception: {ex.Message})", EventLogEntryType.Error);
                 }
             }
-
-            if (appList.Count() > 0)
-            {
-                SendDataToInfluxDB(appList);
-            }
             
+        }
+
+        private void Timer1minElapsed(object sender, ElapsedEventArgs e)
+        {
+            SendDataToInfluxDB();
         }
 
         private void ResetUsageIfNewDay()
         {
             if (DateTime.Now.Date > lastResetDate)
             {
-                List<string> keys = new List<string>(appUsage.Keys);
+                List<string> keys = new List<string>(appUsedPerDay.Keys);
 
                 foreach (string key in keys)
                 {
-                    appUsage[key] = TimeSpan.Zero;
+                    appUsedPerDay[key] = TimeSpan.Zero;
                 }
 
                 warnedApps.Clear();
 
                 lastResetDate = DateTime.Now.Date;
 
-                SaveLastResetDateToRegistry();
+                SaveUsageToRegistry();
             }
         }
 
@@ -262,40 +251,39 @@ namespace TrackerAppService
         {
             TimeSpan duration = TimeSpan.Zero;
             DateTime now = DateTime.Now;
-            if (lastApp != null && trackedApps.Contains(lastApp))
+
+            if (!appUsedPerDay.ContainsKey(appTitle))
             {
-                duration = now - lastStartTime;
-                if (!appUsage.ContainsKey(lastApp))
-                {
-                    appUsage[lastApp] = TimeSpan.Zero;
-                }
-                appUsage[lastApp] += duration;
+                appUsedPerDay[appTitle] = TimeSpan.Zero;
+            }
+            else
+            {
+                appUsedPerDay[appTitle] += TimeSpan.FromSeconds(10); //+10 sec
             }
 
-            lastApp = appTitle;
             lastStartTime = now;
 
             int dow = (int)now.DayOfWeek; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
             TimeSpan appLimit = (TimeSpan)appUsageLimits[appTitle].GetValue(dow); 
-            TimeSpan remainingTime = appLimit - appUsage[appTitle];
+            TimeSpan remainingTime = appLimit - appUsedPerDay[appTitle];
 
             string signn = remainingTime < TimeSpan.Zero ? "-" : "";
 
-            string logEntry = $"{now}: used:{appUsage[appTitle].ToString("hh\\:mm\\:ss")}, remains:{signn}{remainingTime.ToString("hh\\:mm\\:ss")}, {appTitle}";
+            string logEntry = $"{now}: used:{appUsedPerDay[appTitle].ToString("hh\\:mm\\:ss")}, remains:{signn}{remainingTime.ToString("hh\\:mm\\:ss")}, {appTitle}";
             System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
         }
 
         private void CheckUsageLimit(string appTitle)
         {
-            if (appUsage.ContainsKey(appTitle))
+            if (appUsedPerDay.ContainsKey(appTitle))
             {
                 DateTime now = DateTime.Now;
                 int dow = (int)now.DayOfWeek; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
                 TimeSpan appLimit = (TimeSpan)appUsageLimits[appTitle].GetValue(dow);
 
-                TimeSpan remainingTime = appLimit - appUsage[appTitle];                
+                TimeSpan remainingTime = appLimit - appUsedPerDay[appTitle];                
 
-                if (appUsage[appTitle] >= appLimit)
+                if (remainingTime <= TimeSpan.Zero)
                 {
                     KillApplication(appTitle);
                 }
@@ -346,9 +334,15 @@ namespace TrackerAppService
         {
             timer.Stop();
             timer.Dispose();
+
+            if (timer1min != null)
+            {
+                timer1min.Stop();
+                timer1min.Dispose();
+            }
+
             SummarizeUsage();
             SaveUsageToRegistry();
-            SaveLastResetDateToRegistry();
         }
 
         private void SummarizeUsage()
@@ -356,7 +350,7 @@ namespace TrackerAppService
             using (StreamWriter writer = new StreamWriter(logFilePath, true))
             {
                 writer.WriteLine("\nApplication Usage Summary:");
-                foreach (var entry in appUsage)
+                foreach (var entry in appUsedPerDay)
                 {
                     writer.WriteLine($"{entry.Key}: {entry.Value}");
                 }
@@ -369,23 +363,15 @@ namespace TrackerAppService
             {
                 if (key != null)
                 {
-                    foreach (var entry in appUsage)
+                    foreach (var entry in appUsedPerDay)
                     {
                         key.SetValue(entry.Key, entry.Value.ToString());
                     }
-                }
-            }
-        }
 
-        private void SaveLastResetDateToRegistry()
-        {
-            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(registryPath))
-            {
-                if (key != null)
-                {
                     key.SetValue("LastResetDate", lastResetDate.ToString("yyyy-MM-dd"));
                 }
             }
         }
+
     }
 }

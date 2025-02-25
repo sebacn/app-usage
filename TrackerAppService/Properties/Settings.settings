@@ -22,5 +22,8 @@
   &lt;string&gt;word,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00&lt;/string&gt;
 &lt;/ArrayOfString&gt;</Value>
     </Setting>
+    <Setting Name="influxClientCertificate" Type="System.String" Scope="User">
+      <Value Profile="(Default)" />
+    </Setting>
   </Settings>
 </SettingsFile>
