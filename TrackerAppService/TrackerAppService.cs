@@ -2,32 +2,25 @@
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices;
 using System.ServiceProcess;
-using System.Text;
-using System.Threading.Tasks;
 using System.Timers;
-using System.Windows.Forms;
 using InfluxDB.Client;
 using InfluxDB.Client.Api.Domain;
 using InfluxDB.Client.Writes;
 using System.Security.Cryptography.X509Certificates;
 
-namespace TrackerAppService
-{
+namespace TrackerAppService 
+{ 
+
+
     public partial class TrackerAppService : ServiceBase
     {
         private System.Timers.Timer timer, timer1min;
         private Dictionary<string, TimeSpan> appUsedPerDay = new Dictionary<string, TimeSpan>();
         private Dictionary<string, TimeSpan[]> appUsageLimits = new Dictionary<string, TimeSpan[]>();
         private HashSet<string> warnedApps = new HashSet<string>();
-        //private string lastApp = null;
-        private DateTime lastStartTime;
         private HashSet<string> trackedApps = new HashSet<string>();
         private string registryPath = "SOFTWARE\\TrackerAppService";
         private DateTime lastResetDate = DateTime.Now.Date;
@@ -59,9 +52,15 @@ namespace TrackerAppService
             {
                 X509Certificate2 x509Certificate2 = null;
 
-                if (!string.IsNullOrEmpty(Properties.Settings.Default.influxClientCertificate))
+                if (!string.IsNullOrEmpty(Properties.Settings.Default.influxCertKeyFileName))
                 {
-                    x509Certificate2 = new X509Certificate2(Properties.Settings.Default.influxClientCertificate, "", X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
+                    string influxCertKeyFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Properties.Settings.Default.influxCertKeyFileName);
+                    if (System.IO.File.Exists(influxCertKeyFilePath))
+                    {
+                        string influxCertKeyPass = string.IsNullOrEmpty(Properties.Settings.Default.influxCertKeyPass) ? "" : Properties.Settings.Default.influxCertKeyPass;
+
+                        x509Certificate2 = new X509Certificate2(influxCertKeyFilePath, influxCertKeyPass, X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet); //"C:\\Temp\\cert.pfx"
+                    }
                 }
 
                 var options = new InfluxDBClientOptions(Properties.Settings.Default.influxUrl)
@@ -69,11 +68,18 @@ namespace TrackerAppService
                     Token = Properties.Settings.Default.influxToken,
                     Org = Properties.Settings.Default.influxOrg,
                     Bucket = Properties.Settings.Default.influxBucket,
-                    ClientCertificates = x509Certificate2 != null ? new X509CertificateCollection() { x509Certificate2 } : null
+                    ClientCertificates = x509Certificate2 != null ? new X509CertificateCollection() { x509Certificate2 } : new X509CertificateCollection() { }
                 };
 
                 using (var client = new InfluxDBClient(options)) // Properties.Settings.Default.influxUrl, Properties.Settings.Default.influxToken))
                 {
+                    var connectable = client.PingAsync().Result;
+
+                    if (!connectable)
+                    {
+                        throw new Exception("InfluxDBClient not connectable");
+                    }
+
                     using (var writeApi = client.GetWriteApi())
                     {
                         DateTime now = DateTime.Now;
@@ -118,7 +124,6 @@ namespace TrackerAppService
             timer = new System.Timers.Timer(10000); // Logs every 10 seconds
             timer.Elapsed += TimerElapsed;
             timer.Start();
-            lastStartTime = DateTime.Now;
 
             if (InfluxDBConfigOk())
             {
@@ -126,6 +131,12 @@ namespace TrackerAppService
                 timer1min.Elapsed += Timer1minElapsed;
                 timer1min.Start();
             }
+
+            DateTime now = DateTime.Now;
+            string logEntry = $"{now}: TrackerAppService started";
+            System.IO.File.AppendAllText(logFilePath, Environment.NewLine + logEntry);
+
+            SummarizeUsage();
         }
 
         private void LoadTrackedApps()
@@ -261,8 +272,6 @@ namespace TrackerAppService
                 appUsedPerDay[appTitle] += TimeSpan.FromSeconds(10); //+10 sec
             }
 
-            lastStartTime = now;
-
             int dow = (int)now.DayOfWeek; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
             TimeSpan appLimit = (TimeSpan)appUsageLimits[appTitle].GetValue(dow); 
             TimeSpan remainingTime = appLimit - appUsedPerDay[appTitle];
@@ -343,6 +352,10 @@ namespace TrackerAppService
 
             SummarizeUsage();
             SaveUsageToRegistry();
+
+            DateTime now = DateTime.Now;
+            string logEntry = $"{now}: TrackerAppService stopped";
+            System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
         }
 
         private void SummarizeUsage()

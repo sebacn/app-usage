@@ -3,27 +3,30 @@
   <Profiles />
   <Settings>
     <Setting Name="influxUrl" Type="System.String" Scope="User">
-      <Value Profile="(Default)">sfsfsdfsf</Value>
+      <Value Profile="(Default)">https://url3434.com</Value>
     </Setting>
     <Setting Name="influxToken" Type="System.String" Scope="User">
-      <Value Profile="(Default)" />
+      <Value Profile="(Default)">ttokenn</Value>
     </Setting>
     <Setting Name="influxOrg" Type="System.String" Scope="User">
-      <Value Profile="(Default)">sdfsdfsfs</Value>
+      <Value Profile="(Default)">iforgg</Value>
     </Setting>
     <Setting Name="influxBucket" Type="System.String" Scope="User">
-      <Value Profile="(Default)">dfdfdfdf</Value>
+      <Value Profile="(Default)">bucket</Value>
     </Setting>
     <Setting Name="appUsageLimits" Type="System.Collections.Specialized.StringCollection" Scope="User">
       <Value Profile="(Default)">&lt;?xml version="1.0" encoding="utf-16"?&gt;
 &lt;ArrayOfString xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"&gt;
-  &lt;string&gt;notepad,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00&lt;/string&gt;
+  &lt;string&gt;notepad,11:30:00,11:30:00,00:20:00,00:20:00,11:30:00,11:30:00,11:30:00&lt;/string&gt;
   &lt;string&gt;chrome,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00&lt;/string&gt;
   &lt;string&gt;word,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00&lt;/string&gt;
 &lt;/ArrayOfString&gt;</Value>
     </Setting>
-    <Setting Name="influxClientCertificate" Type="System.String" Scope="User">
-      <Value Profile="(Default)" />
+    <Setting Name="influxCertKeyFileName" Type="System.String" Scope="User">
+      <Value Profile="(Default)">cert.pfx</Value>
+    </Setting>
+    <Setting Name="influxCertKeyPass" Type="System.String" Scope="User">
+      <Value Profile="(Default)">cert_pass</Value>
     </Setting>
   </Settings>
 </SettingsFile>

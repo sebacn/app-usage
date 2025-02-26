@@ -25,7 +25,7 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("sfsfsdfsf")]
+        [global::System.Configuration.DefaultSettingValueAttribute("https://url3434.com")]
         public string influxUrl {
             get {
                 return ((string)(this["influxUrl"]));
@@ -37,7 +37,7 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        [global::System.Configuration.DefaultSettingValueAttribute("ttokenn")]
         public string influxToken {
             get {
                 return ((string)(this["influxToken"]));
@@ -49,7 +49,7 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("sdfsdfsfs")]
+        [global::System.Configuration.DefaultSettingValueAttribute("iforgg")]
         public string influxOrg {
             get {
                 return ((string)(this["influxOrg"]));
@@ -61,7 +61,7 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("dfdfdfdf")]
+        [global::System.Configuration.DefaultSettingValueAttribute("bucket")]
         public string influxBucket {
             get {
                 return ((string)(this["influxBucket"]));
@@ -75,7 +75,7 @@ namespace TrackerAppService.Properties {
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute(@"<?xml version=""1.0"" encoding=""utf-16""?>
 <ArrayOfString xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"">
-  <string>notepad,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00</string>
+  <string>notepad,11:30:00,11:30:00,00:20:00,00:20:00,11:30:00,11:30:00,11:30:00</string>
   <string>chrome,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00</string>
   <string>word,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00</string>
 </ArrayOfString>")]
@@ -90,13 +90,25 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("")]
-        public string influxClientCertificate {
+        [global::System.Configuration.DefaultSettingValueAttribute("cert.pfx")]
+        public string influxCertKeyFileName {
             get {
-                return ((string)(this["influxClientCertificate"]));
+                return ((string)(this["influxCertKeyFileName"]));
             }
             set {
-                this["influxClientCertificate"] = value;
+                this["influxCertKeyFileName"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("cert_pass")]
+        public string influxCertKeyPass {
+            get {
+                return ((string)(this["influxCertKeyPass"]));
+            }
+            set {
+                this["influxCertKeyPass"] = value;
             }
         }
     }
