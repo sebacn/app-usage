@@ -10,22 +10,32 @@ using InfluxDB.Client;
 using InfluxDB.Client.Api.Domain;
 using InfluxDB.Client.Writes;
 using System.Security.Cryptography.X509Certificates;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Security.Principal;
+using Newtonsoft.Json.Linq;
+using System.ComponentModel;
+using System.Linq;
+using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
-{ 
-
+{
+ 
 
     public partial class TrackerAppService : ServiceBase
     {
+
         private System.Timers.Timer timer, timer1min;
-        private Dictionary<string, TimeSpan> appUsedPerDay = new Dictionary<string, TimeSpan>();
+        private Dictionary<string, TimeSpan> appUsagePerDay = new Dictionary<string, TimeSpan>();
         private Dictionary<string, TimeSpan[]> appUsageLimits = new Dictionary<string, TimeSpan[]>();
         private HashSet<string> warnedApps = new HashSet<string>();
         private HashSet<string> trackedApps = new HashSet<string>();
         private string registryPath = "SOFTWARE\\TrackerAppService";
         private DateTime lastResetDate = DateTime.Now.Date;
 
-        string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
+        //static List<WinStruct> winStructList = new List<WinStruct>();
+
+        string logFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
 
         public TrackerAppService()
         {
@@ -50,11 +60,12 @@ namespace TrackerAppService
 
             try
             {
+
                 X509Certificate2 x509Certificate2 = null;
 
                 if (!string.IsNullOrEmpty(Properties.Settings.Default.influxCertKeyFileName))
                 {
-                    string influxCertKeyFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Properties.Settings.Default.influxCertKeyFileName);
+                    string influxCertKeyFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Properties.Settings.Default.influxCertKeyFileName);
                     if (System.IO.File.Exists(influxCertKeyFilePath))
                     {
                         string influxCertKeyPass = string.IsNullOrEmpty(Properties.Settings.Default.influxCertKeyPass) ? "" : Properties.Settings.Default.influxCertKeyPass;
@@ -87,19 +98,29 @@ namespace TrackerAppService
 
                         List<PointData> lpd = new List<PointData>();
 
-                        foreach (var entry in appUsageLimits)
+                        foreach (var entry in appUsagePerDay)
                         {
+                            TimeSpan tslimit = TimeSpan.FromDays(1);
+
+                            if (appUsageLimits.ContainsKey(entry.Key))
+                            {
+                                tslimit = (TimeSpan)appUsageLimits[entry.Key].GetValue(dow);
+                            }
+
                             var point = PointData.Measurement("tracker-app")
                                 .Tag("host", Environment.MachineName)
                                 .Tag("application", entry.Key)
-                                .Field("run-time-minutes", appUsedPerDay.ContainsKey(entry.Key)? appUsedPerDay[entry.Key].TotalMinutes : 0)
-                                .Field("limit-time-minutes", entry.Value[dow].TotalMinutes)
+                                .Field("run-time-minutes", entry.Value.TotalMinutes)
+                                .Field("limit-time-minutes", tslimit.TotalMinutes)
                                 .Timestamp(DateTime.UtcNow, WritePrecision.S);
 
                             lpd.Add(point);
                         }
 
-                        writeApi.WritePoints(lpd); //, Properties.Settings.Default.influxBucket, Properties.Settings.Default.influxOrg);
+                        if (lpd.Count > 0)
+                        {
+                            writeApi.WritePoints(lpd); //, Properties.Settings.Default.influxBucket, Properties.Settings.Default.influxOrg);
+                        }
                     }
                 }
             }
@@ -172,9 +193,9 @@ namespace TrackerAppService
 
         private void LoadUsageFromRegistry()
         {
-            appUsedPerDay.Clear();
+            appUsagePerDay.Clear();
 
-            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(registryPath))
+            using (RegistryKey key = Registry.LocalMachine.OpenSubKey(registryPath))
             {
                 if (key != null)
                 {
@@ -190,45 +211,78 @@ namespace TrackerAppService
                         }
                         else if (TimeSpan.TryParse(key.GetValue(appName).ToString(), out TimeSpan duration))
                         {
-                            appUsedPerDay[appName] = duration;
+                            appUsagePerDay[appName] = duration;
                         }
                     }
                 }
             }
         }
 
+
+
+        private HashSet<string> GetWinProcesses()
+        {
+            HashSet<string> ret = new HashSet<string>();
+
+            DateTime now = DateTime.Now;
+            TimeSpan dtdiff = now - DateTime.MinValue;
+            string rkey = $"app-list-{((int)dtdiff.TotalMinutes)}";
+
+            try
+            {
+                ProcessServices pss = new ProcessServices();
+
+                if (pss.StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + " " + rkey)) // "notepad"))
+                {
+                    string rk = registryPath + "\\" + rkey;
+                    using (RegistryKey key = Registry.LocalMachine.OpenSubKey(rk))
+                    {
+                        if (key != null)
+                        {
+                            foreach (string appName in key.GetValueNames())
+                            {
+                                //Debug.WriteLine(appName);
+                                ret.Add(appName);
+                            } 
+                        }
+                    }
+
+                    Registry.LocalMachine.DeleteSubKeyTree(rk, false);
+                }
+
+            }
+            catch (Exception ex)
+            {
+                if (!EventLog.SourceExists("TrackerAppService"))
+                {
+                    EventLog.CreateEventSource("TrackerAppService", "Application");
+                }
+                EventLog.WriteEntry("TrackerAppService", $"Exception: {ex.Message}", EventLogEntryType.Error);
+            }
+
+            return ret;
+        }
+
+
         private void TimerElapsed(object sender, ElapsedEventArgs e)
         {
             ResetUsageIfNewDay();
 
-            HashSet<string> appList = new HashSet<string>();
+            HashSet<string> procl = GetWinProcesses();
 
-            Process[] processList = Process.GetProcesses();
-
-            foreach (Process process in processList)
+            foreach (var pname in procl)
             {
-                try
+                if (!appUsagePerDay.ContainsKey(pname))
                 {
-                    //Console.WriteLine($"PID: {process.Id}, Name: {process.ProcessName}");
-
-                    if (!string.IsNullOrEmpty(process.ProcessName) 
-                     && trackedApps.Contains(process.ProcessName) 
-                     && !appList.Contains(process.ProcessName))
-                    {
-                        appList.Add(process.ProcessName);
-
-                        LogUsage(process.ProcessName);
-                        CheckUsageLimit(process.ProcessName);
-                    }
+                    appUsagePerDay[pname] = TimeSpan.Zero;
                 }
-                catch (Exception ex)
+                else
                 {
-                    if (!EventLog.SourceExists("TrackerAppService"))
-                    {
-                        EventLog.CreateEventSource("TrackerAppService", "Application");
-                    }
-                    EventLog.WriteEntry("TrackerAppService", $"Process running: {process.ProcessName} (Exception: {ex.Message})", EventLogEntryType.Error);
+                    appUsagePerDay[pname] += TimeSpan.FromSeconds(10); //+10 sec
                 }
+
+                LogUsage(pname);
+                CheckUsageLimit(pname);
             }
             
         }
@@ -242,11 +296,11 @@ namespace TrackerAppService
         {
             if (DateTime.Now.Date > lastResetDate)
             {
-                List<string> keys = new List<string>(appUsedPerDay.Keys);
+                List<string> keys = new List<string>(appUsagePerDay.Keys);
 
                 foreach (string key in keys)
                 {
-                    appUsedPerDay[key] = TimeSpan.Zero;
+                    appUsagePerDay[key] = TimeSpan.Zero;
                 }
 
                 warnedApps.Clear();
@@ -263,34 +317,30 @@ namespace TrackerAppService
             TimeSpan duration = TimeSpan.Zero;
             DateTime now = DateTime.Now;
 
-            if (!appUsedPerDay.ContainsKey(appTitle))
-            {
-                appUsedPerDay[appTitle] = TimeSpan.Zero;
-            }
-            else
-            {
-                appUsedPerDay[appTitle] += TimeSpan.FromSeconds(10); //+10 sec
-            }
+            TimeSpan remainingTime = TimeSpan.FromDays(1) - TimeSpan.FromSeconds(1);
 
-            int dow = (int)now.DayOfWeek; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
-            TimeSpan appLimit = (TimeSpan)appUsageLimits[appTitle].GetValue(dow); 
-            TimeSpan remainingTime = appLimit - appUsedPerDay[appTitle];
+            if (appUsageLimits.ContainsKey(appTitle))
+            {
+                int dow = (int)now.DayOfWeek; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
+                TimeSpan appLimit = (TimeSpan)appUsageLimits[appTitle].GetValue(dow);
+                remainingTime = appLimit - appUsagePerDay[appTitle];
+            }
 
             string signn = remainingTime < TimeSpan.Zero ? "-" : "";
 
-            string logEntry = $"{now}: used:{appUsedPerDay[appTitle].ToString("hh\\:mm\\:ss")}, remains:{signn}{remainingTime.ToString("hh\\:mm\\:ss")}, {appTitle}";
+            string logEntry = $"{now}: used:{appUsagePerDay[appTitle].ToString("hh\\:mm\\:ss")}, remains:{signn}{remainingTime.ToString("hh\\:mm\\:ss")}, {appTitle}";
             System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
         }
 
         private void CheckUsageLimit(string appTitle)
         {
-            if (appUsedPerDay.ContainsKey(appTitle))
+            if (appUsagePerDay.ContainsKey(appTitle) && appUsageLimits.ContainsKey(appTitle))
             {
                 DateTime now = DateTime.Now;
                 int dow = (int)now.DayOfWeek; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
                 TimeSpan appLimit = (TimeSpan)appUsageLimits[appTitle].GetValue(dow);
 
-                TimeSpan remainingTime = appLimit - appUsedPerDay[appTitle];                
+                TimeSpan remainingTime = appLimit - appUsagePerDay[appTitle];                
 
                 if (remainingTime <= TimeSpan.Zero)
                 {
@@ -363,7 +413,7 @@ namespace TrackerAppService
             using (StreamWriter writer = new StreamWriter(logFilePath, true))
             {
                 writer.WriteLine("\nApplication Usage Summary:");
-                foreach (var entry in appUsedPerDay)
+                foreach (var entry in appUsagePerDay)
                 {
                     writer.WriteLine($"{entry.Key}: {entry.Value}");
                 }
@@ -372,11 +422,11 @@ namespace TrackerAppService
 
         private void SaveUsageToRegistry()
         {
-            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(registryPath))
+            using (RegistryKey key = Registry.LocalMachine.CreateSubKey(registryPath))
             {
                 if (key != null)
                 {
-                    foreach (var entry in appUsedPerDay)
+                    foreach (var entry in appUsagePerDay)
                     {
                         key.SetValue(entry.Key, entry.Value.ToString());
                     }
