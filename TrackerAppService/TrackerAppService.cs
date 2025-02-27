@@ -1,6 +1,4 @@
-﻿using Microsoft.Toolkit.Uwp.Notifications;
-using Microsoft.Win32;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -10,13 +8,7 @@ using InfluxDB.Client;
 using InfluxDB.Client.Api.Domain;
 using InfluxDB.Client.Writes;
 using System.Security.Cryptography.X509Certificates;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Security.Principal;
-using Newtonsoft.Json.Linq;
-using System.ComponentModel;
-using System.Linq;
-using Windows.UI.Xaml.Shapes;
+using Microsoft.Win32;
 
 namespace TrackerAppService 
 {
@@ -361,13 +353,8 @@ namespace TrackerAppService
             string title = $"{appTitle.ToUpper()} Usage Limit";
             //MessageBox.Show(message, "Usage Limit Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
-            // Requires Microsoft.Toolkit.Uwp.Notifications NuGet package version 7.0 or greater
-            new ToastContentBuilder()
-                .AddArgument("action", "viewConversation")
-                .AddArgument("conversationId", 9813)
-                .AddText(title)
-                .AddText(message)
-                .Show(); // Not seeing the Show() method? Make sure you have version 7.0, and if you're using .NET 6 (or later), then your TFM must be net6.0-windows10.0.17763.0 or greater
+            new ProcessServices().StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + $" app-notify \"{title}\" \"{message}\"");
+
         }
 
         private void KillApplication(string appTitle)
@@ -379,13 +366,8 @@ namespace TrackerAppService
                 string message = $"Usage time for {appTitle.ToUpper()} is expired for today!";
                 string title = $"{appTitle.ToUpper()} Usage Limit Expired";
 
-                // Requires Microsoft.Toolkit.Uwp.Notifications NuGet package version 7.0 or greater
-                new ToastContentBuilder()
-                    .AddArgument("action", "viewConversation")
-                    .AddArgument("conversationId", 9813)
-                    .AddText(title)
-                    .AddText(message)
-                    .Show(); // Not seeing the Show() method? Make sure you have version 7.0, and if you're using .NET 6 (or later), then your TFM must be net6.0-windows10.0.17763.0 or greater
+                new ProcessServices().StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + $" app-notify \"{title}\" \"{message}\"");
+
             }
         }
 

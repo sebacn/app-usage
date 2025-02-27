@@ -1,17 +1,31 @@
 ﻿using Microsoft.Win32;
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.ServiceProcess;
-using System.Text;
-using System.Threading.Tasks;
-using Windows.UI.Xaml.Controls;
 
 namespace TrackerAppService
 {
     static class Program
     {
+
+
+        public static void psNotifyUser(string title, string message)
+        {
+
+            var ps1File = "msgNotify.ps1";
+
+            var startInfo = new ProcessStartInfo()
+            {
+
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -ExecutionPolicy ByPass -File \"{ps1File}\" -mtitle \"{title}\" -mtext \"{message}\"",
+                UseShellExecute = false,
+                WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
+            };
+            Process.Start(startInfo);
+
+        }
+
         /// <summary>
         /// The main entry point for the application.
         /// </summary>
@@ -48,6 +62,11 @@ namespace TrackerAppService
                 return;
             }
 
+            if (args != null && args.Length >= 3 && args[0].StartsWith("app-notify"))
+            {
+                psNotifyUser(args[1], args[2]);
+                return;
+            }
 
 
             ServiceBase[] ServicesToRun;

@@ -1,15 +1,7 @@
-﻿using InfluxDB.Client.Api.Domain;
-using Microsoft.Win32.SafeHandles;
-using System;
-using System.Collections.Generic;
+﻿using System;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Runtime.Versioning;
-using System.Text;
-using System.Threading.Tasks;
-using System.Web;
 
 namespace TrackerAppService
 {
