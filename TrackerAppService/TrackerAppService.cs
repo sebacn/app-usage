@@ -9,6 +9,10 @@ using InfluxDB.Client.Api.Domain;
 using InfluxDB.Client.Writes;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Win32;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Windows.Input;
+using System.Windows.Forms;
 
 namespace TrackerAppService 
 {
@@ -129,7 +133,29 @@ namespace TrackerAppService
 
         protected override void OnStart(string[] args)
         {
-            Properties.Settings.Default.Save();
+            //Properties.Settings.Default.Save();
+            
+            using (RegistryKey rkey = Registry.LocalMachine.OpenSubKey(registryPath, RegistryKeyPermissionCheck.ReadWriteSubTree))
+            {
+                if (rkey == null)
+                {
+                    using (RegistryKey rkeyNew = Registry.LocalMachine.CreateSubKey(registryPath, RegistryKeyPermissionCheck.ReadWriteSubTree))
+                    {
+                        RegistrySecurity rs = rkeyNew.GetAccessControl();
+
+                        // Creating registry access rule for 'Everyone' NT account
+                        RegistryAccessRule rar = new RegistryAccessRule(
+                            "BUILTIN\\Users",
+                            RegistryRights.FullControl,
+                            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                            PropagationFlags.None,
+                            AccessControlType.Allow);
+
+                        rs.AddAccessRule(rar);
+                        rkeyNew.SetAccessControl(rs);
+                    }
+                }
+            }
 
             LoadTrackedApps();
             LoadUsageFromRegistry();
