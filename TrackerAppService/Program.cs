@@ -40,7 +40,6 @@ namespace TrackerAppService
         static void Main(string[] args)
         {
             
-        //string arg = "nulll";
             if (args != null && args.Length > 0 && args[0].StartsWith("app-list-"))
             {
                 //EventLog.WriteEntry("TrackerAppService", $"Args: {args[0]}", EventLogEntryType.Warning);
@@ -67,10 +66,9 @@ namespace TrackerAppService
 
                                 if ((result == 0 && cloakedVal != 0) == false) // 0 means success, and cloakedVal > 0 indicates a cloaked window
                                 {
-
                                     Console.WriteLine($"{process.Id}, {process.ProcessName}, {process.MainWindowTitle}");
 
-                                    key.SetValue(process.ProcessName, process.Id);
+                                    key.SetValue(process.ProcessName == "ApplicationFrameHost" ? process.MainWindowTitle : process.ProcessName, process.Id);
                                 }
                             }
                         }
