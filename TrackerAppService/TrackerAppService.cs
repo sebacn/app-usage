@@ -90,6 +90,16 @@ namespace TrackerAppService
 
                     using (var writeApi = client.GetWriteApi())
                     {
+                        writeApi.EventHandler += (sender, eventArgs) =>
+                        {
+                            if (eventArgs is WriteErrorEvent @event)
+                            {
+                                var exception = @event.Exception;
+
+                                EventLog.WriteEntry("TrackerAppService", $"InfluxDBClient: {exception.Message}", EventLogEntryType.Error);
+                            }
+                        };
+
                         DateTime now = DateTime.Now;
                         int dow = (int)now.DayOfWeek;
 
@@ -107,8 +117,8 @@ namespace TrackerAppService
                             var point = PointData.Measurement("tracker-app")
                                 .Tag("host", Environment.MachineName)
                                 .Tag("application", entry.Key)
-                                .Field("run-time-minutes", entry.Value.TotalMinutes)
-                                .Field("limit-time-minutes", tslimit.TotalMinutes)
+                                .Field("run-time-minutes", (int)entry.Value.TotalMinutes)
+                                .Field("limit-time-minutes", (int)tslimit.TotalMinutes)
                                 .Timestamp(DateTime.UtcNow, WritePrecision.S);
 
                             lpd.Add(point);
@@ -323,6 +333,8 @@ namespace TrackerAppService
                 }
 
                 warnedApps.Clear();
+
+                System.IO.File.Move(logFilePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"AppUsage-{lastResetDate:yyyy-dd-MM}.log"));
 
                 lastResetDate = DateTime.Now.Date;
 
