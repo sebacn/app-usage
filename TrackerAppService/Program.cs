@@ -1,13 +1,21 @@
 ﻿using Microsoft.Win32;
 using System;
 using System.Diagnostics;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.ServiceProcess;
 
 namespace TrackerAppService
 {
     static class Program
     {
+        private const int DWMWA_CLOAKED = 14;
 
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        internal static extern bool IsWindowVisible(IntPtr hwnd);
+
+        [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
+        internal static extern int DwmGetWindowAttribute(IntPtr IntPtr, int dwAttribute, out int pvAttribute, uint cbAttribute);
 
         public static void psNotifyUser(string title, string message)
         {
@@ -16,7 +24,7 @@ namespace TrackerAppService
 
             var startInfo = new ProcessStartInfo()
             {
-
+                CreateNoWindow = true,
                 FileName = "powershell.exe",
                 Arguments = $"-NoProfile -ExecutionPolicy ByPass -File \"{ps1File}\" -mtitle \"{title}\" -mtext \"{message}\"",
                 UseShellExecute = false,
@@ -45,15 +53,25 @@ namespace TrackerAppService
                 {
                     if (key != null)
                     {
+                        int cpid = Process.GetCurrentProcess().Id;
+
                         Process[] processList = Process.GetProcesses();
 
-                        foreach (Process process in processList)
+                        foreach (Process process in processList.Where(p => p.Id != cpid))
                         {
-                            if (process.MainWindowHandle != IntPtr.Zero)
+                            if (process.MainWindowHandle != IntPtr.Zero 
+                             && IsWindowVisible(process.MainWindowHandle))
                             {
-                                Console.WriteLine($"{process.Id}, {process.ProcessName}, {process.MainWindowTitle}");
+                                int cloakedVal = 0;
+                                int result = DwmGetWindowAttribute(process.MainWindowHandle, DWMWA_CLOAKED, out cloakedVal, sizeof(int));
 
-                                key.SetValue(process.ProcessName, process.SessionId);
+                                if ((result == 0 && cloakedVal != 0) == false) // 0 means success, and cloakedVal > 0 indicates a cloaked window
+                                {
+
+                                    Console.WriteLine($"{process.Id}, {process.ProcessName}, {process.MainWindowTitle}");
+
+                                    key.SetValue(process.ProcessName, process.Id);
+                                }
                             }
                         }
                     }

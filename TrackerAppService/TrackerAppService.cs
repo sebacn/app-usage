@@ -13,6 +13,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Windows.Input;
 using System.Windows.Forms;
+using System.Linq;
 
 namespace TrackerAppService 
 {
@@ -238,9 +239,9 @@ namespace TrackerAppService
 
 
 
-        private HashSet<string> GetWinProcesses()
+        private Dictionary<string, int> GetWinProcesses()
         {
-            HashSet<string> ret = new HashSet<string>();
+            Dictionary<string, int> ret = new Dictionary<string, int>();
 
             DateTime now = DateTime.Now;
             TimeSpan dtdiff = now - DateTime.MinValue;
@@ -260,7 +261,7 @@ namespace TrackerAppService
                             foreach (string appName in key.GetValueNames())
                             {
                                 //Debug.WriteLine(appName);
-                                ret.Add(appName);
+                                ret.Add(appName, (int)key.GetValue(appName));
                             } 
                         }
                     }
@@ -286,21 +287,21 @@ namespace TrackerAppService
         {
             ResetUsageIfNewDay();
 
-            HashSet<string> procl = GetWinProcesses();
+            Dictionary<string, int> procl = GetWinProcesses();
 
-            foreach (var pname in procl)
+            foreach (var pl in procl)
             {
-                if (!appUsagePerDay.ContainsKey(pname))
+                if (!appUsagePerDay.ContainsKey(pl.Key))
                 {
-                    appUsagePerDay[pname] = TimeSpan.Zero;
+                    appUsagePerDay[pl.Key] = TimeSpan.Zero;
                 }
                 else
                 {
-                    appUsagePerDay[pname] += TimeSpan.FromSeconds(10); //+10 sec
+                    appUsagePerDay[pl.Key] += TimeSpan.FromSeconds(10); //+10 sec
                 }
 
-                LogUsage(pname);
-                CheckUsageLimit(pname);
+                LogUsage(pl.Key);
+                CheckUsageLimit(pl.Key, pl.Value);
             }
             
         }
@@ -350,7 +351,7 @@ namespace TrackerAppService
             System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
         }
 
-        private void CheckUsageLimit(string appTitle)
+        private void CheckUsageLimit(string appTitle, int pid)
         {
             if (appUsagePerDay.ContainsKey(appTitle) && appUsageLimits.ContainsKey(appTitle))
             {
@@ -362,7 +363,7 @@ namespace TrackerAppService
 
                 if (remainingTime <= TimeSpan.Zero)
                 {
-                    KillApplication(appTitle);
+                    KillApplication(appTitle, pid);
                 }
                 else if (remainingTime <= TimeSpan.FromMinutes(5) && !warnedApps.Contains(appTitle))
                 {
@@ -383,9 +384,9 @@ namespace TrackerAppService
 
         }
 
-        private void KillApplication(string appTitle)
+        private void KillApplication(string appTitle, int pid)
         {
-            foreach (var process in Process.GetProcessesByName(appTitle))
+            foreach (var process in Process.GetProcessesByName(appTitle).Where(p => p.Id == pid))
             {
                 process.Kill();
 
