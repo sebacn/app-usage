@@ -28,11 +28,10 @@ namespace TrackerAppService
         private HashSet<string> warnedApps = new HashSet<string>();
         private HashSet<string> trackedApps = new HashSet<string>();
         private string registryPath = "SOFTWARE\\TrackerAppService";
+        private const string regUsage = "\\usage";
         private DateTime lastResetDate = DateTime.Now.Date;
 
-        //static List<WinStruct> winStructList = new List<WinStruct>();
-
-        string logFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
+        string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");        
 
         public TrackerAppService()
         {
@@ -133,10 +132,6 @@ namespace TrackerAppService
             }
             catch (Exception ex)
             {
-                if (!EventLog.SourceExists("TrackerAppService"))
-                {
-                    EventLog.CreateEventSource("TrackerAppService", "Application");
-                }
                 EventLog.WriteEntry("TrackerAppService", $"Exception: {ex.Message}", EventLogEntryType.Error);
             }
             
@@ -145,7 +140,12 @@ namespace TrackerAppService
         protected override void OnStart(string[] args)
         {
             //Properties.Settings.Default.Save();
-            
+
+            if (!EventLog.SourceExists("TrackerAppService"))
+            {
+                EventLog.CreateEventSource("TrackerAppService", "Application");
+            }
+
             using (RegistryKey rkey = Registry.LocalMachine.OpenSubKey(registryPath, RegistryKeyPermissionCheck.ReadWriteSubTree))
             {
                 if (rkey == null)
@@ -228,17 +228,21 @@ namespace TrackerAppService
             {
                 if (key != null)
                 {
+                    string resetDateValue = key.GetValue("LastResetDate") as string;
+                    if (!string.IsNullOrEmpty(resetDateValue) && DateTime.TryParse(resetDateValue, out DateTime resetDate))
+                    {
+                        lastResetDate = resetDate;
+                    }
+                }
+            }
+
+            using (RegistryKey key = Registry.LocalMachine.OpenSubKey(registryPath + regUsage))
+            {
+                if (key != null)
+                {
                     foreach (string appName in key.GetValueNames())
                     {
-                        if (appName == "LastResetDate")
-                        {
-                            string resetDateValue = key.GetValue(appName) as string;
-                            if (!string.IsNullOrEmpty(resetDateValue) && DateTime.TryParse(resetDateValue, out DateTime resetDate))
-                            {
-                                lastResetDate = resetDate;
-                            }
-                        }
-                        else if (TimeSpan.TryParse(key.GetValue(appName).ToString(), out TimeSpan duration))
+                        if (TimeSpan.TryParse(key.GetValue(appName).ToString(), out TimeSpan duration))
                         {
                             appUsagePerDay[appName] = duration;
                         }
@@ -282,10 +286,6 @@ namespace TrackerAppService
             }
             catch (Exception ex)
             {
-                if (!EventLog.SourceExists("TrackerAppService"))
-                {
-                    EventLog.CreateEventSource("TrackerAppService", "Application");
-                }
                 EventLog.WriteEntry("TrackerAppService", $"Exception: {ex.Message}", EventLogEntryType.Error);
             }
 
@@ -325,14 +325,10 @@ namespace TrackerAppService
         {
             if (DateTime.Now.Date > lastResetDate)
             {
-                List<string> keys = new List<string>(appUsagePerDay.Keys);
-
-                foreach (string key in keys)
-                {
-                    appUsagePerDay[key] = TimeSpan.Zero;
-                }
-
+                appUsagePerDay.Clear();
                 warnedApps.Clear();
+
+                Registry.LocalMachine.DeleteSubKeyTree(registryPath + regUsage, false);                
 
                 System.IO.File.Move(logFilePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"AppUsage-{lastResetDate:yyyy-dd-MM}.log"));
 
@@ -445,14 +441,17 @@ namespace TrackerAppService
         {
             using (RegistryKey key = Registry.LocalMachine.CreateSubKey(registryPath))
             {
+                key?.SetValue("LastResetDate", lastResetDate.ToString("yyyy-MM-dd"));
+            }
+
+            using (RegistryKey key = Registry.LocalMachine.CreateSubKey(registryPath + regUsage))
+            {
                 if (key != null)
                 {
                     foreach (var entry in appUsagePerDay)
                     {
                         key.SetValue(entry.Key, entry.Value.ToString());
                     }
-
-                    key.SetValue("LastResetDate", lastResetDate.ToString("yyyy-MM-dd"));
                 }
             }
         }
