@@ -47,12 +47,14 @@ namespace TrackerAppService
                 && !string.IsNullOrEmpty(Properties.Settings.Default.influxBucket));
         }
 
-        private void SendDataToInfluxDB()
+        private void SendDataToInfluxDB(DateTime? _dt = null, bool _idle = false)
         {
             if (!InfluxDBConfigOk())
             {
                 return;
             }
+
+            DateTime dt = _dt ?? DateTime.UtcNow;
 
             try
             {
@@ -118,7 +120,19 @@ namespace TrackerAppService
                                 .Tag("application", entry.Key)
                                 .Field("run-time-minutes", (int)entry.Value.TotalMinutes)
                                 .Field("limit-time-minutes", (int)tslimit.TotalMinutes)
-                                .Timestamp(DateTime.UtcNow, WritePrecision.S);
+                                .Timestamp(dt, WritePrecision.S);
+
+                            lpd.Add(point);
+                        }
+
+                        if (_idle)
+                        {
+                            var point = PointData.Measurement("tracker-app")
+                                .Tag("host", Environment.MachineName)
+                                .Tag("application", "idle")
+                                .Field("run-time-minutes", (int)1)
+                                .Field("limit-time-minutes", (int)1)
+                                .Timestamp(dt, WritePrecision.S);
 
                             lpd.Add(point);
                         }
@@ -323,12 +337,16 @@ namespace TrackerAppService
 
         private void ResetUsageIfNewDay()
         {
-            if (DateTime.Now.Date > lastResetDate)
-            {
+            if (DateTime.Now.Date > lastResetDate.Date)
+            {  
+                SendDataToInfluxDB(lastResetDate.AddDays(1).AddMinutes(-1)); //lastResetDate 23.59.00
+
                 appUsagePerDay.Clear();
                 warnedApps.Clear();
 
-                Registry.LocalMachine.DeleteSubKeyTree(registryPath + regUsage, false);                
+                Registry.LocalMachine.DeleteSubKeyTree(registryPath + regUsage, false);
+
+                SendDataToInfluxDB(lastResetDate.Date.AddDays(1).AddMinutes(1), true); //lastResetDate 00.01.00
 
                 System.IO.File.Move(logFilePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"AppUsage-{lastResetDate:yyyy-dd-MM}.log"));
 
