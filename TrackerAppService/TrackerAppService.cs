@@ -8,12 +8,8 @@ using InfluxDB.Client;
 using InfluxDB.Client.Api.Domain;
 using InfluxDB.Client.Writes;
 using System.Security.Cryptography.X509Certificates;
-using Microsoft.Win32;
-using System.Security.AccessControl;
-using System.Security.Principal;
-using System.Windows.Input;
-using System.Windows.Forms;
 using System.Linq;
+using System.Text.Json;
 
 namespace TrackerAppService 
 {
@@ -27,11 +23,14 @@ namespace TrackerAppService
         private Dictionary<string, TimeSpan[]> appUsageLimits = new Dictionary<string, TimeSpan[]>();
         private HashSet<string> warnedApps = new HashSet<string>();
         private HashSet<string> trackedApps = new HashSet<string>();
-        private string registryPath = "SOFTWARE\\TrackerAppService";
-        private const string regUsage = "\\usage";
         private DateTime lastResetDate = DateTime.Now.Date;
+        List<PointData> cachePointData = new List<PointData>();
 
-        string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");        
+        string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
+        string cacheFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AachePointDataInfluxDB.json");
+        string appUsageFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.json");
+        string lastResetDateFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppLastResetDate.json");
+        string appListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppList.json");
 
         public TrackerAppService()
         {
@@ -101,10 +100,15 @@ namespace TrackerAppService
                             }
                         };
 
+                        List<PointData> lpd = new List<PointData>();
+
+                        if (cachePointData.Count > 0)
+                        {
+                            lpd.AddRange(cachePointData);
+                        }
+
                         DateTime now = DateTime.Now;
                         int dow = (int)now.DayOfWeek;
-
-                        List<PointData> lpd = new List<PointData>();
 
                         foreach (var entry in appUsagePerDay)
                         {
@@ -131,9 +135,38 @@ namespace TrackerAppService
                         }
                     }
                 }
+
+                cachePointData.Clear();
+
+                if (System.IO.File.Exists(cacheFilePath))
+                {
+                    System.IO.File.Delete(cacheFilePath);
+                }
             }
             catch (Exception ex)
             {
+                DateTime now = DateTime.Now;
+                int dow = (int)now.DayOfWeek;
+
+                foreach (var entry in appUsagePerDay)
+                {
+                    TimeSpan tslimit = TimeSpan.FromDays(1);
+
+                    if (appUsageLimits.ContainsKey(entry.Key))
+                    {
+                        tslimit = (TimeSpan)appUsageLimits[entry.Key].GetValue(dow);
+                    }
+
+                    var point = PointData.Measurement("tracker-app")
+                        .Tag("host", Environment.MachineName)
+                        .Tag("application", entry.Key)
+                        .Field("run-time-minutes", (int)entry.Value.TotalMinutes)
+                        .Field("limit-time-minutes", (int)tslimit.TotalMinutes)
+                        .Timestamp(dt, WritePrecision.S);
+
+                    cachePointData.Add(point);
+                }
+
                 EventLog.WriteEntry("TrackerAppService", $"Exception: {ex.Message}", EventLogEntryType.Error);
             }
             
@@ -148,32 +181,10 @@ namespace TrackerAppService
                 EventLog.CreateEventSource("TrackerAppService", "Application");
             }
 
-            using (RegistryKey rkey = Registry.LocalMachine.OpenSubKey(registryPath, RegistryKeyPermissionCheck.ReadWriteSubTree))
-            {
-                if (rkey == null)
-                {
-                    using (RegistryKey rkeyNew = Registry.LocalMachine.CreateSubKey(registryPath, RegistryKeyPermissionCheck.ReadWriteSubTree))
-                    {
-                        RegistrySecurity rs = rkeyNew.GetAccessControl();
-
-                        // Creating registry access rule for 'Everyone' NT account
-                        RegistryAccessRule rar = new RegistryAccessRule(
-                            "BUILTIN\\Users",
-                            RegistryRights.FullControl,
-                            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                            PropagationFlags.None,
-                            AccessControlType.Allow);
-
-                        rs.AddAccessRule(rar);
-                        rkeyNew.SetAccessControl(rs);
-                    }
-                }
-            }
-
             LoadTrackedApps();
-            LoadUsageFromRegistry();
+            LoadUsageAndCacheFromFIle();
 
-            timer = new System.Timers.Timer(10000); // Logs every 10 seconds
+            timer = new System.Timers.Timer(60000); // Logs every 10 seconds
             timer.Elapsed += TimerElapsed;
             timer.Start();
 
@@ -220,48 +231,21 @@ namespace TrackerAppService
 
             }
 
-        }
-
-        private void LoadUsageFromRegistry()
-        {
-            appUsagePerDay.Clear();
-
-            using (RegistryKey key = Registry.LocalMachine.OpenSubKey(registryPath))
+            if (System.IO.File.Exists(cacheFilePath))
             {
-                if (key != null)
-                {
-                    string resetDateValue = key.GetValue("LastResetDate") as string;
-                    if (!string.IsNullOrEmpty(resetDateValue) && DateTime.TryParse(resetDateValue, out DateTime resetDate))
-                    {
-                        lastResetDate = resetDate;
-                    }
-                }
-            }
-
-            using (RegistryKey key = Registry.LocalMachine.OpenSubKey(registryPath + regUsage))
-            {
-                if (key != null)
-                {
-                    foreach (string appName in key.GetValueNames())
-                    {
-                        if (TimeSpan.TryParse(key.GetValue(appName).ToString(), out TimeSpan duration))
-                        {
-                            appUsagePerDay[appName] = duration;
-                        }
-                    }
-                }
+                string json = System.IO.File.ReadAllText(cacheFilePath);
+                cachePointData = JsonSerializer.Deserialize<List<PointData>>(json) ?? new List<PointData>();
             }
         }
-
 
 
         private Dictionary<string, int> GetWinProcesses()
         {
             Dictionary<string, int> ret = new Dictionary<string, int>();
 
-            DateTime now = DateTime.Now;
-            TimeSpan dtdiff = now - DateTime.MinValue;
-            string rkey = $"app-list-{((int)dtdiff.TotalMinutes)}";
+            System.IO.File.WriteAllText(appListFilePath, "");
+
+            string rkey = $"app-list-123";
 
             try
             {
@@ -269,20 +253,12 @@ namespace TrackerAppService
 
                 if (pss.StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + " " + rkey)) // "notepad"))
                 {
-                    string rk = registryPath + "\\" + rkey;
-                    using (RegistryKey key = Registry.LocalMachine.OpenSubKey(rk))
-                    {
-                        if (key != null)
-                        {
-                            foreach (string appName in key.GetValueNames())
-                            {
-                                //Debug.WriteLine(appName);
-                                ret.Add(appName, (int)key.GetValue(appName));
-                            } 
-                        }
-                    }
 
-                    Registry.LocalMachine.DeleteSubKeyTree(rk, false);
+                    string json = System.IO.File.ReadAllText(appListFilePath);
+                    if (json != "")
+                    {
+                        ret = JsonSerializer.Deserialize<Dictionary<string, int>>(json) ?? new Dictionary<string, int>();
+                    }
                 }
 
             }
@@ -341,15 +317,11 @@ namespace TrackerAppService
                 appUsagePerDay.Clear();
                 warnedApps.Clear();
 
-                Registry.LocalMachine.DeleteSubKeyTree(registryPath + regUsage, false);
-
-                //SendDataToInfluxDB(lastResetDate.Date.AddDays(1).AddMinutes(1), true); //lastResetDate 00.01.00
-
                 System.IO.File.Move(logFilePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"AppUsage-{lastResetDate:yyyy-dd-MM}.log"));
 
                 lastResetDate = DateTime.Now.Date;
 
-                SaveUsageToRegistry();
+                SaveUsageAndCacheToFIle();
             }
         }
 
@@ -433,7 +405,7 @@ namespace TrackerAppService
             }
 
             SummarizeUsage();
-            SaveUsageToRegistry();
+            SaveUsageAndCacheToFIle();
 
             DateTime now = DateTime.Now;
             string logEntry = $"{now}: TrackerAppService stopped";
@@ -452,23 +424,61 @@ namespace TrackerAppService
             }
         }
 
-        private void SaveUsageToRegistry()
+        private void SaveUsageAndCacheToFIle()
         {
-            using (RegistryKey key = Registry.LocalMachine.CreateSubKey(registryPath))
-            {
-                key?.SetValue("LastResetDate", lastResetDate.ToString("yyyy-MM-dd"));
-            }
+            System.IO.File.WriteAllText(lastResetDateFilePath, lastResetDate.ToString("yyyy-MM-dd"));
 
-            using (RegistryKey key = Registry.LocalMachine.CreateSubKey(registryPath + regUsage))
+            string json = JsonSerializer.Serialize(appUsagePerDay, new JsonSerializerOptions { WriteIndented = true });
+            System.IO.File.WriteAllText(appUsageFilePath, json);
+
+            if (cachePointData.Count > 0)
             {
-                if (key != null)
+                json = JsonSerializer.Serialize(cachePointData, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(cacheFilePath, json);
+            }
+            else if (System.IO.File.Exists(cacheFilePath))
+            {
+                System.IO.File.Delete(cacheFilePath);
+            }
+        }
+
+        private void LoadUsageAndCacheFromFIle()
+        {
+            appUsagePerDay.Clear();
+
+            lastResetDate = DateTime.Now.Date;
+
+            if (System.IO.File.Exists(lastResetDateFilePath))
+            {
+                string resetDateValue = System.IO.File.ReadAllText(lastResetDateFilePath);
+
+                if (!string.IsNullOrEmpty(resetDateValue) && DateTime.TryParse(resetDateValue, out DateTime resetDate))
                 {
-                    foreach (var entry in appUsagePerDay)
-                    {
-                        key.SetValue(entry.Key, entry.Value.ToString());
-                    }
+                    lastResetDate = resetDate;
                 }
             }
+            else
+            {
+                System.IO.File.WriteAllText(lastResetDateFilePath, lastResetDate.ToString("yyyy-MM-dd"));
+            }
+
+            if (System.IO.File.Exists(appUsageFilePath))
+            {
+                string json = System.IO.File.ReadAllText(appUsageFilePath);
+                appUsagePerDay = JsonSerializer.Deserialize<Dictionary<string, TimeSpan>>(json) ?? new Dictionary<string, TimeSpan>();
+            }
+            else
+            {
+                string json = JsonSerializer.Serialize(appUsagePerDay, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(appUsageFilePath, json);
+            }
+
+            if (System.IO.File.Exists(cacheFilePath))
+            {
+                string json = System.IO.File.ReadAllText(cacheFilePath);
+                cachePointData = JsonSerializer.Deserialize<List<PointData>>(json) ?? new List<PointData>();
+            }
+
         }
 
     }

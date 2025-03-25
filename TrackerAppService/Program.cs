@@ -1,9 +1,14 @@
 ﻿using Microsoft.Win32;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO.Pipes;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
+using System.Text.Json;
+using System.Windows.Forms;
 
 namespace TrackerAppService
 {
@@ -42,38 +47,38 @@ namespace TrackerAppService
             
             if (args != null && args.Length > 0 && args[0].StartsWith("app-list-"))
             {
-                //EventLog.WriteEntry("TrackerAppService", $"Args: {args[0]}", EventLogEntryType.Warning);
+                int cupid = Process.GetCurrentProcess().Id;
 
-                string registryPath = $"SOFTWARE\\TrackerAppService\\{args[0]}";
+                Dictionary<string, int> appList = new Dictionary<string, int>();
 
-                Registry.LocalMachine.DeleteSubKeyTree(registryPath, false);
+                Process[] processList = Process.GetProcesses();
 
-                using (RegistryKey key = Registry.LocalMachine.CreateSubKey(registryPath))
+                foreach (Process process in processList.Where(p => p.Id != cupid))
                 {
-                    if (key != null)
+                    if (process.MainWindowHandle != IntPtr.Zero 
+                        && IsWindowVisible(process.MainWindowHandle))
                     {
-                        int cpid = Process.GetCurrentProcess().Id;
+                        int cloakedVal = 0;
+                        int result = DwmGetWindowAttribute(process.MainWindowHandle, DWMWA_CLOAKED, out cloakedVal, sizeof(int));
 
-                        Process[] processList = Process.GetProcesses();
-
-                        foreach (Process process in processList.Where(p => p.Id != cpid))
+                        if ((result == 0 && cloakedVal != 0) == false) // 0 means success, and cloakedVal > 0 indicates a cloaked window
                         {
-                            if (process.MainWindowHandle != IntPtr.Zero 
-                             && IsWindowVisible(process.MainWindowHandle))
+                            //Console.WriteLine($"{process.Id}, {process.ProcessName}, {process.MainWindowTitle}");
+
+                            string appName = process.ProcessName == "ApplicationFrameHost" ? process.MainWindowTitle : process.ProcessName;
+
+                            if (!appList.ContainsKey(appName))
                             {
-                                int cloakedVal = 0;
-                                int result = DwmGetWindowAttribute(process.MainWindowHandle, DWMWA_CLOAKED, out cloakedVal, sizeof(int));
-
-                                if ((result == 0 && cloakedVal != 0) == false) // 0 means success, and cloakedVal > 0 indicates a cloaked window
-                                {
-                                    Console.WriteLine($"{process.Id}, {process.ProcessName}, {process.MainWindowTitle}");
-
-                                    key.SetValue(process.ProcessName == "ApplicationFrameHost" ? process.MainWindowTitle : process.ProcessName, process.Id);
-                                }
+                                appList.Add(appName, process.Id);
                             }
                         }
                     }
-                } 
+                }
+
+                string json = JsonSerializer.Serialize(appList, new JsonSerializerOptions { WriteIndented = true });
+
+                string appListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppList.json");
+                System.IO.File.WriteAllText(appListFilePath, json);
 
                 return;
             }
