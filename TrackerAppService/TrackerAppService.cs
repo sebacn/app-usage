@@ -10,6 +10,9 @@ using InfluxDB.Client.Writes;
 using System.Security.Cryptography.X509Certificates;
 using System.Linq;
 using System.Text.Json;
+using System.Security.AccessControl;
+using System.Security.Principal;
+//using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
 {
@@ -181,10 +184,19 @@ namespace TrackerAppService
                 EventLog.CreateEventSource("TrackerAppService", "Application");
             }
 
+            System.IO.File.WriteAllText(appListFilePath, "");
+
+            var fileSecurity = new System.Security.AccessControl.FileSecurity();
+            var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
+            var rule = new FileSystemAccessRule(everyone, FileSystemRights.FullControl, AccessControlType.Allow);
+            fileSecurity.AddAccessRule(rule);
+
+            System.IO.File.SetAccessControl(appListFilePath, fileSecurity);
+
             LoadTrackedApps();
             LoadUsageAndCacheFromFIle();
 
-            timer = new System.Timers.Timer(60000); // Logs every 10 seconds
+            timer = new System.Timers.Timer(10000); // Logs every 10 seconds
             timer.Elapsed += TimerElapsed;
             timer.Start();
 
