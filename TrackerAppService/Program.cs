@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using System.Text.Json;
 using System.Windows.Forms;
+using Windows.Media.Protection.PlayReady;
 
 namespace TrackerAppService
 {
@@ -77,6 +78,7 @@ namespace TrackerAppService
 
                 string json = JsonSerializer.Serialize(appList, new JsonSerializerOptions { WriteIndented = true });
 
+                /*
                 string appListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppList.json");
 
                 try
@@ -86,7 +88,28 @@ namespace TrackerAppService
                 catch (Exception ex)
                 {
                     EventLog.WriteEntry("TrackerAppService", $"Exception (main.WriteAllText): {ex.Message}", EventLogEntryType.Error);
-                }                
+                }
+                */
+
+                try
+                {
+                    using (var clientPipe = new NamedPipeClientStream(".", "TrackerAppService.pipe", PipeDirection.InOut, PipeOptions.None))
+                    {
+                        clientPipe.Connect(1000);
+
+                        using (var writer = new StreamWriter(clientPipe))
+                        {
+                            writer.AutoFlush = true;
+                            writer.WriteLine(json);
+                        }
+
+                        clientPipe.Close();
+                    }  
+                }
+                catch (Exception ex)
+                {
+                    EventLog.WriteEntry("TrackerAppService", $"Exception (main.pipeWrite): {ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+                }
 
                 return;
             }

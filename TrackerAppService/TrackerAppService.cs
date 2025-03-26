@@ -14,6 +14,11 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Collections;
 using Windows.UI.Composition;
+using System.IO.Pipes;
+using System.Threading.Tasks;
+using System.Threading;
+using System.Windows.Forms;
+using System.Windows.Input;
 //using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
@@ -30,17 +35,26 @@ namespace TrackerAppService
         private HashSet<string> trackedApps = new HashSet<string>();
         private DateTime lastResetDate = DateTime.Now.Date;
         Dictionary<DateTime, List<PointData>> cachePointData = new Dictionary<DateTime, List<PointData>>();
+        private PowerBroadcastStatus currPowerStatus;
+        CancellationTokenSource pipeServerCTS = new CancellationTokenSource();
+        Task<Dictionary<string, int>> pipeTask = null;
 
         string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
         string cacheFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppCachePointDataInfluxDB.json");
         string appUsageFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.json");
         string lastResetDateFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppLastResetDate.json");
-        string appListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppList.json");
+        //string appListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppList.json");
 
         public TrackerAppService()
         {
+            EventLog.WriteEntry("TrackerAppService", "Service class initialized", EventLogEntryType.Information);
             InitializeComponent();
-            
+        }
+
+        // Destructor
+        ~TrackerAppService()
+        {
+            EventLog.WriteEntry("TrackerAppService", "Service class destructed", EventLogEntryType.Information);
         }
 
         private bool InfluxDBConfigOk()
@@ -189,15 +203,6 @@ namespace TrackerAppService
 
             EventLog.WriteEntry("TrackerAppService", "Service started", EventLogEntryType.Information);
 
-            System.IO.File.WriteAllText(appListFilePath, "");
-
-            var fileSecurity = new System.Security.AccessControl.FileSecurity();
-            var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
-            var rule = new FileSystemAccessRule(everyone, FileSystemRights.FullControl, AccessControlType.Allow);
-            fileSecurity.AddAccessRule(rule);
-
-            System.IO.File.SetAccessControl(appListFilePath, fileSecurity);
-
             LoadTrackedApps();
             LoadUsageAndCacheFromFIle();
 
@@ -217,6 +222,68 @@ namespace TrackerAppService
             System.IO.File.AppendAllText(logFilePath, Environment.NewLine + logEntry);
 
             SummarizeUsage();
+        }
+
+        protected override void OnStop()
+        {
+            EventLog.WriteEntry("TrackerAppService", "Service stopped", EventLogEntryType.Information);
+
+            timer.Stop();
+            timer.Dispose();
+
+            pipeServerCTS.Cancel();
+
+            if (timer1min != null)
+            {
+                timer1min.Stop();
+                timer1min.Dispose();
+            }
+
+            SummarizeUsage();
+            SaveUsageAndCacheToFIle();
+
+            DateTime now = DateTime.Now;
+            string logEntry = $"{now}: TrackerAppService stopped";
+            System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
+        }
+
+        protected override bool OnPowerEvent(System.ServiceProcess.PowerBroadcastStatus powerStatus)
+        {
+            currPowerStatus = powerStatus;
+            EventLog.WriteEntry("TrackerAppService", $"Power event: {powerStatus}", EventLogEntryType.Warning);
+            return true;
+        }
+
+        private void RunPipeServer()
+        {
+            if (pipeTask != null && pipeTask.Status == TaskStatus.Running)
+            {
+                return;
+            }
+
+            pipeServerCTS = new CancellationTokenSource();
+
+            pipeTask = Task.Run(() => RunPipeServerAsync(pipeServerCTS.Token));
+
+            pipeTask.GetAwaiter().OnCompleted(() =>
+            {
+                foreach (var pl in pipeTask.Result)
+                {
+                    if (!appUsagePerDay.ContainsKey(pl.Key))
+                    {
+                        appUsagePerDay[pl.Key] = TimeSpan.Zero;
+                    }
+                    else
+                    {
+                        appUsagePerDay[pl.Key] += TimeSpan.FromSeconds(10); //+10 sec
+                    }
+
+                    LogUsage(pl.Key);
+                    CheckUsageLimit(pl.Key, pl.Value);
+                }
+
+                //MessageBox.Show("the task completed in the main thread", "");
+            });
         }
 
         private void LoadTrackedApps()
@@ -255,7 +322,7 @@ namespace TrackerAppService
             }
         }
 
-
+        /*
         private Dictionary<string, int> GetWinProcesses()
         {
             Dictionary<string, int> ret = new Dictionary<string, int>();
@@ -270,12 +337,13 @@ namespace TrackerAppService
 
                 if (pss.StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + " " + rkey)) // "notepad"))
                 {
-
+                    
                     string json = System.IO.File.ReadAllText(appListFilePath);
                     if (json != "")
                     {
                         ret = JsonSerializer.Deserialize<Dictionary<string, int>>(json) ?? new Dictionary<string, int>();
                     }
+                    
                 }
 
             }
@@ -286,14 +354,31 @@ namespace TrackerAppService
 
             return ret;
         }
-
+        */
 
         private void TimerElapsed(object sender, ElapsedEventArgs e)
         {
             ResetUsageIfNewDay();
 
+            RunPipeServer();
+
+            try
+            {
+                ProcessServices pss = new ProcessServices();
+                string rkey = $"app-list-123";
+
+                pss.StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + " " + rkey);
+                
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("TrackerAppService", $"Exception (GetWinProcesses): {ex.Message}", EventLogEntryType.Error);
+            }
+
+            /*
             Dictionary<string, int> procl = GetWinProcesses();
 
+            
             foreach (var pl in procl)
             {
                 if (!appUsagePerDay.ContainsKey(pl.Key))
@@ -308,7 +393,7 @@ namespace TrackerAppService
                 LogUsage(pl.Key);
                 CheckUsageLimit(pl.Key, pl.Value);
             }
-            
+            */
         }
 
         private void Timer1minElapsed(object sender, ElapsedEventArgs e)
@@ -410,27 +495,6 @@ namespace TrackerAppService
             }
         }
 
-        protected override void OnStop()
-        {
-            EventLog.WriteEntry("TrackerAppService", "Service stopped", EventLogEntryType.Information);
-
-            timer.Stop();
-            timer.Dispose();
-
-            if (timer1min != null)
-            {
-                timer1min.Stop();
-                timer1min.Dispose();
-            }
-
-            SummarizeUsage();
-            SaveUsageAndCacheToFIle();
-
-            DateTime now = DateTime.Now;
-            string logEntry = $"{now}: TrackerAppService stopped";
-            System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
-        }
-
         private void SummarizeUsage()
         {
             using (StreamWriter writer = new StreamWriter(logFilePath, true))
@@ -498,6 +562,36 @@ namespace TrackerAppService
                 cachePointData = JsonSerializer.Deserialize< Dictionary < DateTime, List < PointData >>> (json) ?? new Dictionary<DateTime, List<PointData>>();
             }
 
+        }
+
+        private static async Task<Dictionary<string, int>> RunPipeServerAsync(CancellationToken ct)
+        {
+            string json = "";
+            Dictionary<string, int> appList = new Dictionary<string, int>();
+
+            PipeSecurity pipeSecurity = new PipeSecurity();
+            pipeSecurity.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+            pipeSecurity.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
+
+            using (var pserver = new NamedPipeServerStream("TrackerAppService.pipe", PipeDirection.InOut, 10, PipeTransmissionMode.Message, PipeOptions.WriteThrough, 1024, 1024, pipeSecurity))
+            {
+                await pserver.WaitForConnectionAsync(ct);
+
+                StreamReader reader = new StreamReader(pserver);
+
+                json = reader.ReadToEnd();
+
+                pserver.Disconnect();
+                pserver.Dispose();
+                pserver.Close();
+            }  
+
+            if (json != "")
+            {
+                appList = JsonSerializer.Deserialize<Dictionary<string, int>>(json) ?? new Dictionary<string, int>();
+            }
+
+            return appList;
         }
 
     }

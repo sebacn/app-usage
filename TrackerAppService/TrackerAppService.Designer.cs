@@ -30,6 +30,7 @@
         {
             components = new System.ComponentModel.Container();
             this.ServiceName = "TrackerAppService";
+            this.CanHandlePowerEvent = true;
         }
 
         #endregion
