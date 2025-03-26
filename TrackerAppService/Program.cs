@@ -78,7 +78,15 @@ namespace TrackerAppService
                 string json = JsonSerializer.Serialize(appList, new JsonSerializerOptions { WriteIndented = true });
 
                 string appListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppList.json");
-                System.IO.File.WriteAllText(appListFilePath, json);
+
+                try
+                {
+                    System.IO.File.WriteAllText(appListFilePath, json);
+                }
+                catch (Exception ex)
+                {
+                    EventLog.WriteEntry("TrackerAppService", $"Exception (main.WriteAllText): {ex.Message}", EventLogEntryType.Error);
+                }                
 
                 return;
             }

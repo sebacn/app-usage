@@ -356,7 +356,7 @@ namespace TrackerAppService
                 uint rret = WaitForSingleObject(pi.hProcess, 1000); //wait for the child process exit.
                 if (rret != 0)
                 {
-                    EventLog.WriteEntry("TrackerAppService", $"WaitForSingleObject Warning: {Marshal.GetLastWin32Error()}", EventLogEntryType.Warning);
+                    EventLog.WriteEntry("TrackerAppService", $"WaitForSingleObject: Waiting for process failed ({Marshal.GetLastWin32Error()})", EventLogEntryType.Warning);
                 }
             }
 

@@ -12,6 +12,8 @@ using System.Linq;
 using System.Text.Json;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Collections;
+using Windows.UI.Composition;
 //using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
@@ -27,10 +29,10 @@ namespace TrackerAppService
         private HashSet<string> warnedApps = new HashSet<string>();
         private HashSet<string> trackedApps = new HashSet<string>();
         private DateTime lastResetDate = DateTime.Now.Date;
-        List<PointData> cachePointData = new List<PointData>();
+        Dictionary<DateTime, List<PointData>> cachePointData = new Dictionary<DateTime, List<PointData>>();
 
         string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
-        string cacheFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AachePointDataInfluxDB.json");
+        string cacheFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppCachePointDataInfluxDB.json");
         string appUsageFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.json");
         string lastResetDateFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppLastResetDate.json");
         string appListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppList.json");
@@ -47,6 +49,35 @@ namespace TrackerAppService
                 && !string.IsNullOrEmpty(Properties.Settings.Default.influxToken)
                 && !string.IsNullOrEmpty(Properties.Settings.Default.influxOrg)
                 && !string.IsNullOrEmpty(Properties.Settings.Default.influxBucket));
+        }
+
+        List<PointData>  GetPointDataList(DateTime dt)
+        {
+            List<PointData> ret = new List<PointData>();
+
+            DateTime now = DateTime.Now;
+            int dow = (int)now.DayOfWeek;
+
+            foreach (var entry in appUsagePerDay)
+            {
+                TimeSpan tslimit = TimeSpan.FromDays(1);
+
+                if (appUsageLimits.ContainsKey(entry.Key))
+                {
+                    tslimit = (TimeSpan)appUsageLimits[entry.Key].GetValue(dow);
+                }
+
+                var point = PointData.Measurement("tracker-app")
+                    .Tag("host", Environment.MachineName)
+                    .Tag("application", entry.Key)
+                    .Field("run-time-minutes", (int)entry.Value.TotalMinutes)
+                    .Field("limit-time-minutes", (int)tslimit.TotalMinutes)
+                    .Timestamp(dt, WritePrecision.S);
+
+                ret.Add(point);
+            }
+
+            return ret;
         }
 
         private void SendDataToInfluxDB(DateTime? _dt = null)
@@ -103,33 +134,17 @@ namespace TrackerAppService
                             }
                         };
 
-                        List<PointData> lpd = new List<PointData>();
+                        List<PointData> lpd =  GetPointDataList(dt);
 
                         if (cachePointData.Count > 0)
                         {
-                            lpd.AddRange(cachePointData);
-                        }
-
-                        DateTime now = DateTime.Now;
-                        int dow = (int)now.DayOfWeek;
-
-                        foreach (var entry in appUsagePerDay)
-                        {
-                            TimeSpan tslimit = TimeSpan.FromDays(1);
-
-                            if (appUsageLimits.ContainsKey(entry.Key))
+                            foreach (var item in cachePointData)
                             {
-                                tslimit = (TimeSpan)appUsageLimits[entry.Key].GetValue(dow);
+                                if (dt != item.Key)
+                                {
+                                    lpd.AddRange(item.Value);
+                                }
                             }
-
-                            var point = PointData.Measurement("tracker-app")
-                                .Tag("host", Environment.MachineName)
-                                .Tag("application", entry.Key)
-                                .Field("run-time-minutes", (int)entry.Value.TotalMinutes)
-                                .Field("limit-time-minutes", (int)tslimit.TotalMinutes)
-                                .Timestamp(dt, WritePrecision.S);
-
-                            lpd.Add(point);
                         }
 
                         if (lpd.Count > 0)
@@ -139,40 +154,28 @@ namespace TrackerAppService
                     }
                 }
 
-                cachePointData.Clear();
-
-                if (System.IO.File.Exists(cacheFilePath))
-                {
-                    System.IO.File.Delete(cacheFilePath);
-                }
+                cachePointData.Clear(); //clear cache if data sent ok
+     
             }
             catch (Exception ex)
             {
-                DateTime now = DateTime.Now;
-                int dow = (int)now.DayOfWeek;
 
-                foreach (var entry in appUsagePerDay)
+                if (!cachePointData.ContainsKey(dt))
                 {
-                    TimeSpan tslimit = TimeSpan.FromDays(1);
+                    List<PointData> lpd = GetPointDataList(dt);
 
-                    if (appUsageLimits.ContainsKey(entry.Key))
-                    {
-                        tslimit = (TimeSpan)appUsageLimits[entry.Key].GetValue(dow);
-                    }
-
-                    var point = PointData.Measurement("tracker-app")
-                        .Tag("host", Environment.MachineName)
-                        .Tag("application", entry.Key)
-                        .Field("run-time-minutes", (int)entry.Value.TotalMinutes)
-                        .Field("limit-time-minutes", (int)tslimit.TotalMinutes)
-                        .Timestamp(dt, WritePrecision.S);
-
-                    cachePointData.Add(point);
+                    cachePointData.Add(dt, lpd);
                 }
 
                 EventLog.WriteEntry("TrackerAppService", $"Exception: {ex.Message}", EventLogEntryType.Error);
             }
-            
+
+            if (cachePointData.Count == 0 
+             && System.IO.File.Exists(cacheFilePath))
+            {
+                System.IO.File.Delete(cacheFilePath);
+            }
+
         }
 
         protected override void OnStart(string[] args)
@@ -183,6 +186,8 @@ namespace TrackerAppService
             {
                 EventLog.CreateEventSource("TrackerAppService", "Application");
             }
+
+            EventLog.WriteEntry("TrackerAppService", "Service started", EventLogEntryType.Information);
 
             System.IO.File.WriteAllText(appListFilePath, "");
 
@@ -246,7 +251,7 @@ namespace TrackerAppService
             if (System.IO.File.Exists(cacheFilePath))
             {
                 string json = System.IO.File.ReadAllText(cacheFilePath);
-                cachePointData = JsonSerializer.Deserialize<List<PointData>>(json) ?? new List<PointData>();
+                cachePointData = JsonSerializer.Deserialize<Dictionary<DateTime, List<PointData>>>(json) ?? new Dictionary<DateTime, List<PointData>>();
             }
         }
 
@@ -255,12 +260,12 @@ namespace TrackerAppService
         {
             Dictionary<string, int> ret = new Dictionary<string, int>();
 
-            System.IO.File.WriteAllText(appListFilePath, "");
-
             string rkey = $"app-list-123";
 
             try
             {
+                System.IO.File.WriteAllText(appListFilePath, "");
+
                 ProcessServices pss = new ProcessServices();
 
                 if (pss.StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + " " + rkey)) // "notepad"))
@@ -276,7 +281,7 @@ namespace TrackerAppService
             }
             catch (Exception ex)
             {
-                EventLog.WriteEntry("TrackerAppService", $"Exception: {ex.Message}", EventLogEntryType.Error);
+                EventLog.WriteEntry("TrackerAppService", $"Exception (GetWinProcesses): {ex.Message}", EventLogEntryType.Error);
             }
 
             return ret;
@@ -407,6 +412,8 @@ namespace TrackerAppService
 
         protected override void OnStop()
         {
+            EventLog.WriteEntry("TrackerAppService", "Service stopped", EventLogEntryType.Information);
+
             timer.Stop();
             timer.Dispose();
 
@@ -488,7 +495,7 @@ namespace TrackerAppService
             if (System.IO.File.Exists(cacheFilePath))
             {
                 string json = System.IO.File.ReadAllText(cacheFilePath);
-                cachePointData = JsonSerializer.Deserialize<List<PointData>>(json) ?? new List<PointData>();
+                cachePointData = JsonSerializer.Deserialize< Dictionary < DateTime, List < PointData >>> (json) ?? new Dictionary<DateTime, List<PointData>>();
             }
 
         }
