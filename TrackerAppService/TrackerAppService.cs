@@ -322,39 +322,6 @@ namespace TrackerAppService
             }
         }
 
-        /*
-        private Dictionary<string, int> GetWinProcesses()
-        {
-            Dictionary<string, int> ret = new Dictionary<string, int>();
-
-            string rkey = $"app-list-123";
-
-            try
-            {
-                System.IO.File.WriteAllText(appListFilePath, "");
-
-                ProcessServices pss = new ProcessServices();
-
-                if (pss.StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + " " + rkey)) // "notepad"))
-                {
-                    
-                    string json = System.IO.File.ReadAllText(appListFilePath);
-                    if (json != "")
-                    {
-                        ret = JsonSerializer.Deserialize<Dictionary<string, int>>(json) ?? new Dictionary<string, int>();
-                    }
-                    
-                }
-
-            }
-            catch (Exception ex)
-            {
-                EventLog.WriteEntry("TrackerAppService", $"Exception (GetWinProcesses): {ex.Message}", EventLogEntryType.Error);
-            }
-
-            return ret;
-        }
-        */
 
         private void TimerElapsed(object sender, ElapsedEventArgs e)
         {
@@ -375,25 +342,6 @@ namespace TrackerAppService
                 EventLog.WriteEntry("TrackerAppService", $"Exception (GetWinProcesses): {ex.Message}", EventLogEntryType.Error);
             }
 
-            /*
-            Dictionary<string, int> procl = GetWinProcesses();
-
-            
-            foreach (var pl in procl)
-            {
-                if (!appUsagePerDay.ContainsKey(pl.Key))
-                {
-                    appUsagePerDay[pl.Key] = TimeSpan.Zero;
-                }
-                else
-                {
-                    appUsagePerDay[pl.Key] += TimeSpan.FromSeconds(10); //+10 sec
-                }
-
-                LogUsage(pl.Key);
-                CheckUsageLimit(pl.Key, pl.Value);
-            }
-            */
         }
 
         private void Timer1minElapsed(object sender, ElapsedEventArgs e)
@@ -569,26 +517,33 @@ namespace TrackerAppService
             string json = "";
             Dictionary<string, int> appList = new Dictionary<string, int>();
 
-            PipeSecurity pipeSecurity = new PipeSecurity();
-            pipeSecurity.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
-            pipeSecurity.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
-
-            using (var pserver = new NamedPipeServerStream("TrackerAppService.pipe", PipeDirection.InOut, 10, PipeTransmissionMode.Message, PipeOptions.WriteThrough, 1024, 1024, pipeSecurity))
+            try
             {
-                await pserver.WaitForConnectionAsync(ct);
+                PipeSecurity pipeSecurity = new PipeSecurity();
+                pipeSecurity.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+                pipeSecurity.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
 
-                StreamReader reader = new StreamReader(pserver);
+                using (var pserver = new NamedPipeServerStream("TrackerAppService.pipe", PipeDirection.InOut, 10, PipeTransmissionMode.Message, PipeOptions.WriteThrough, 1024, 1024, pipeSecurity))
+                {
+                    await pserver.WaitForConnectionAsync(ct);
 
-                json = reader.ReadToEnd();
+                    StreamReader reader = new StreamReader(pserver);
 
-                pserver.Disconnect();
-                pserver.Dispose();
-                pserver.Close();
-            }  
+                    json = reader.ReadToEnd();
 
-            if (json != "")
+                    pserver.Disconnect();
+                    pserver.Dispose();
+                    pserver.Close();
+                }
+
+                if (json != "")
+                {
+                    appList = JsonSerializer.Deserialize<Dictionary<string, int>>(json) ?? new Dictionary<string, int>();
+                }
+            }
+            catch (Exception ex)
             {
-                appList = JsonSerializer.Deserialize<Dictionary<string, int>>(json) ?? new Dictionary<string, int>();
+                EventLog.WriteEntry("TrackerAppService", $"Exception (RunPipeServerAsync): {ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
             }
 
             return appList;
