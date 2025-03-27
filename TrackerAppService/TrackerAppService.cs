@@ -19,6 +19,7 @@ using System.Threading.Tasks;
 using System.Threading;
 using System.Windows.Forms;
 using System.Windows.Input;
+using Windows.System;
 //using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
@@ -37,7 +38,8 @@ namespace TrackerAppService
         Dictionary<DateTime, List<PointData>> cachePointData = new Dictionary<DateTime, List<PointData>>();
         private PowerBroadcastStatus currPowerStatus;
         CancellationTokenSource pipeServerCTS = new CancellationTokenSource();
-        Task<Dictionary<string, int>> pipeTask = null;
+        Task pipeTask = null;
+        Progress<Dictionary<string, int>> tprogress = new Progress<Dictionary<string, int>>();
 
         string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
         string cacheFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppCachePointDataInfluxDB.json");
@@ -222,6 +224,8 @@ namespace TrackerAppService
             System.IO.File.AppendAllText(logFilePath, Environment.NewLine + logEntry);
 
             SummarizeUsage();
+
+            RunPipeServer();
         }
 
         protected override void OnStop()
@@ -232,6 +236,7 @@ namespace TrackerAppService
             timer.Dispose();
 
             pipeServerCTS.Cancel();
+            pipeTask.Wait(1000);
 
             if (timer1min != null)
             {
@@ -256,18 +261,12 @@ namespace TrackerAppService
 
         private void RunPipeServer()
         {
-            if (pipeTask != null && pipeTask.Status == TaskStatus.Running)
-            {
-                return;
-            }
 
             pipeServerCTS = new CancellationTokenSource();
 
-            pipeTask = Task.Run(() => RunPipeServerAsync(pipeServerCTS.Token));
-
-            pipeTask.GetAwaiter().OnCompleted(() =>
+            tprogress.ProgressChanged += (s, appList) =>
             {
-                foreach (var pl in pipeTask.Result)
+                foreach (var pl in appList)
                 {
                     if (!appUsagePerDay.ContainsKey(pl.Key))
                     {
@@ -282,7 +281,14 @@ namespace TrackerAppService
                     CheckUsageLimit(pl.Key, pl.Value);
                 }
 
-                //MessageBox.Show("the task completed in the main thread", "");
+                //EventLog.WriteEntry("TrackerAppService", $"ProgressChanged: {string.Join(", ", appList.Keys.ToArray())}", EventLogEntryType.Warning);
+            };
+
+            pipeTask = Task.Run(() => RunPipeServerAsync(tprogress, pipeServerCTS.Token));
+
+            pipeTask.GetAwaiter().OnCompleted(() =>
+            {
+                EventLog.WriteEntry("TrackerAppService", $"Task completed", EventLogEntryType.SuccessAudit);
             });
         }
 
@@ -326,8 +332,6 @@ namespace TrackerAppService
         private void TimerElapsed(object sender, ElapsedEventArgs e)
         {
             ResetUsageIfNewDay();
-
-            RunPipeServer();
 
             try
             {
@@ -512,41 +516,48 @@ namespace TrackerAppService
 
         }
 
-        private static async Task<Dictionary<string, int>> RunPipeServerAsync(CancellationToken ct)
+        private static async Task RunPipeServerAsync(IProgress<Dictionary<string, int>> progress, CancellationToken ct)
         {
-            string json = "";
-            Dictionary<string, int> appList = new Dictionary<string, int>();
+            EventLog.WriteEntry("TrackerAppService", $"Task started", EventLogEntryType.SuccessAudit);
 
-            try
+            while (!ct.IsCancellationRequested)
             {
-                PipeSecurity pipeSecurity = new PipeSecurity();
-                pipeSecurity.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
-                pipeSecurity.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
-
-                using (var pserver = new NamedPipeServerStream("TrackerAppService.pipe", PipeDirection.InOut, 10, PipeTransmissionMode.Message, PipeOptions.WriteThrough, 1024, 1024, pipeSecurity))
+                try
                 {
-                    await pserver.WaitForConnectionAsync(ct);
+                    string json = "";
+                    Dictionary<string, int> appList = new Dictionary<string, int>();
 
-                    StreamReader reader = new StreamReader(pserver);
+                    PipeSecurity pipeSecurity = new PipeSecurity();
+                    pipeSecurity.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+                    pipeSecurity.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
 
-                    json = reader.ReadToEnd();
+                    using (var pserver = new NamedPipeServerStream("TrackerAppService.pipe", PipeDirection.InOut, 10, PipeTransmissionMode.Message, PipeOptions.WriteThrough, 1024, 1024, pipeSecurity))
+                    {
+                        await pserver.WaitForConnectionAsync(ct);
 
-                    pserver.Disconnect();
-                    pserver.Dispose();
-                    pserver.Close();
+                        StreamReader reader = new StreamReader(pserver);
+
+                        json = reader.ReadToEnd();
+
+                        pserver.Disconnect();
+                        pserver.Dispose();
+                        pserver.Close();
+                    }
+
+                    if (json != "")
+                    {
+                        appList = JsonSerializer.Deserialize<Dictionary<string, int>>(json) ?? new Dictionary<string, int>();
+
+                        progress.Report(appList);
+                    }
                 }
-
-                if (json != "")
+                catch (Exception ex)
                 {
-                    appList = JsonSerializer.Deserialize<Dictionary<string, int>>(json) ?? new Dictionary<string, int>();
+                    EventLog.WriteEntry("TrackerAppService", $"Exception (RunPipeServerAsync): {ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
                 }
             }
-            catch (Exception ex)
-            {
-                EventLog.WriteEntry("TrackerAppService", $"Exception (RunPipeServerAsync): {ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
-            }
 
-            return appList;
+            EventLog.WriteEntry("TrackerAppService", $"Task exit", EventLogEntryType.SuccessAudit);
         }
 
     }
