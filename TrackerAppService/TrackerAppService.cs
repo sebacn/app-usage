@@ -636,16 +636,17 @@ namespace TrackerAppService
         
         void SystemEvents_SessionSwitch(object sender, SessionSwitchEventArgs e)
         {
+
             if (e.Reason == SessionSwitchReason.SessionLock)
             {
                 IsSessionLocked = true;
-                EventLog.WriteEntry("TrackerAppService", $"SessionLock", EventLogEntryType.Information);
             }
             else if (e.Reason == SessionSwitchReason.SessionUnlock)
             {
                 IsSessionLocked = false;
-                EventLog.WriteEntry("TrackerAppService", $"SessionUnlock", EventLogEntryType.Information);
             }
+
+            EventLog.WriteEntry("TrackerAppService", $"{e.Reason}", EventLogEntryType.Information);
         }
         
 
