@@ -21,6 +21,8 @@ using System.Windows.Forms;
 using System.Windows.Input;
 using Windows.System;
 using Microsoft.Win32;
+using Windows.Devices.Custom;
+using System.Runtime.InteropServices;
 //using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
@@ -53,8 +55,6 @@ namespace TrackerAppService
         {
             EventLog.WriteEntry("TrackerAppService", "Service class initialized", EventLogEntryType.Information);
 
-            SystemEvents.SessionSwitch += new SessionSwitchEventHandler(SystemEvents_SessionSwitch);
-
             InitializeComponent();
         }
 
@@ -62,8 +62,6 @@ namespace TrackerAppService
         ~TrackerAppService()
         {
             EventLog.WriteEntry("TrackerAppService", "Service class destructed", EventLogEntryType.Information);
-
-            SystemEvents.SessionSwitch -= new SessionSwitchEventHandler(SystemEvents_SessionSwitch);
         }
 
         private bool InfluxDBConfigOk()
@@ -296,6 +294,27 @@ namespace TrackerAppService
             currPowerStatus = powerStatus;
             EventLog.WriteEntry("TrackerAppService", $"Power event: {powerStatus}", EventLogEntryType.Warning);
             return true;
+        }
+
+        protected override void OnSessionChange(SessionChangeDescription desc)
+        {
+            switch (desc.Reason)
+            {
+                case SessionChangeReason.SessionLogon:
+                case SessionChangeReason.SessionUnlock:
+                case SessionChangeReason.RemoteConnect:
+                    //var user = CustomService.UserInformation(desc.SessionId);
+                    IsSessionLocked = false;
+                    break;
+
+                case SessionChangeReason.SessionLock:
+                case SessionChangeReason.SessionLogoff:
+                case SessionChangeReason.RemoteDisconnect:
+                    IsSessionLocked = true;
+                    break;
+            }
+
+            EventLog.WriteEntry("TrackerAppService", $"sid:{desc.SessionId}, {desc.Reason}", EventLogEntryType.Information);
         }
 
         private void RunPipeServer()
@@ -633,22 +652,34 @@ namespace TrackerAppService
             EventLog.WriteEntry("TrackerAppService", $"Task exit", EventLogEntryType.SuccessAudit);
         }
 
-        
-        void SystemEvents_SessionSwitch(object sender, SessionSwitchEventArgs e)
+        /*
+        private static User UserInformation(int sessionId)
         {
+            IntPtr buffer;
+            int length;
 
-            if (e.Reason == SessionSwitchReason.SessionLock)
+            var user = new User();
+
+            if (NativeMethods.WTSQuerySessionInformation(IntPtr.Zero, sessionId, NativeMethods.WTS_INFO_CLASS.WTSUserName, out buffer, out length) && length > 1)
             {
-                IsSessionLocked = true;
-            }
-            else if (e.Reason == SessionSwitchReason.SessionUnlock)
-            {
-                IsSessionLocked = false;
+                user.Name = Marshal.PtrToStringAnsi(buffer);
+
+                NativeMethods.WTSFreeMemory(buffer);
+                if (NativeMethods.WTSQuerySessionInformation(IntPtr.Zero, sessionId, NativeMethods.WTS_INFO_CLASS.WTSDomainName, out buffer, out length) && length > 1)
+                {
+                    user.Domain = Marshal.PtrToStringAnsi(buffer);
+                    NativeMethods.WTSFreeMemory(buffer);
+                }
             }
 
-            EventLog.WriteEntry("TrackerAppService", $"{e.Reason}", EventLogEntryType.Information);
+            if (user.Name.Length == 0)
+            {
+                return null;
+            }
+
+            return user;
         }
-        
+        */
 
     }
 }
