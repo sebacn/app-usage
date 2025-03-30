@@ -144,9 +144,9 @@ namespace TrackerAppService
                         {
                             if (eventArgs is WriteErrorEvent @event)
                             {
-                                var exception = @event.Exception;
+                                var ex = @event.Exception;
 
-                                EventLog.WriteEntry("TrackerAppService", $"InfluxDBClient: {exception.Message}", EventLogEntryType.Error);
+                                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
                             }
                         };
 
@@ -171,7 +171,15 @@ namespace TrackerAppService
                 }
 
                 cachePointData.Clear(); //clear cache if data sent ok
-     
+
+                //remove zero items
+                List<string> keys = new List<string>(appUsagePerDay.Keys);
+
+                foreach (string key in keys.Where(k => appUsagePerDay[k] == TimeSpan.Zero))
+                {
+                    appUsagePerDay.Remove(key);
+                }
+
             }
             catch (Exception ex)
             {
@@ -183,13 +191,20 @@ namespace TrackerAppService
                     cachePointData.Add(dt, lpd);
                 }
 
-                EventLog.WriteEntry("TrackerAppService", $"Exception: {ex.Message}", EventLogEntryType.Error);
+                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
             }
 
             if (cachePointData.Count == 0 
              && System.IO.File.Exists(cacheFilePath))
             {
-                System.IO.File.Delete(cacheFilePath);
+                try
+                {
+                    System.IO.File.Delete(cacheFilePath);
+                }
+                catch (Exception ex)
+                {
+                    EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+                }
             }
 
         }
@@ -221,7 +236,15 @@ namespace TrackerAppService
 
             DateTime now = DateTime.Now;
             string logEntry = $"{now}: TrackerAppService started";
-            System.IO.File.AppendAllText(logFilePath, Environment.NewLine + logEntry);
+
+            try
+            {
+                System.IO.File.AppendAllText(logFilePath, Environment.NewLine + logEntry);
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+            }
 
             SummarizeUsage();
 
@@ -249,8 +272,16 @@ namespace TrackerAppService
 
             DateTime now = DateTime.Now;
             string logEntry = $"{now}: TrackerAppService stopped";
-            System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
-        }
+
+            try
+            { 
+                System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+            }
+}
 
         protected override bool OnPowerEvent(System.ServiceProcess.PowerBroadcastStatus powerStatus)
         {
@@ -272,10 +303,8 @@ namespace TrackerAppService
                     {
                         appUsagePerDay[pl.Key] = TimeSpan.Zero;
                     }
-                    else
-                    {
-                        appUsagePerDay[pl.Key] += TimeSpan.FromSeconds(10); //+10 sec
-                    }
+                    
+                    appUsagePerDay[pl.Key] += TimeSpan.FromSeconds(10); //+10 sec
 
                     LogUsage(pl.Key);
                     CheckUsageLimit(pl.Key, pl.Value);
@@ -343,7 +372,7 @@ namespace TrackerAppService
             }
             catch (Exception ex)
             {
-                EventLog.WriteEntry("TrackerAppService", $"Exception (GetWinProcesses): {ex.Message}", EventLogEntryType.Error);
+                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
             }
 
         }
@@ -368,10 +397,17 @@ namespace TrackerAppService
 
                 SendDataToInfluxDB(lastResetDate.AddDays(1)); //new Date 00.00.00
 
-                appUsagePerDay.Clear();
+                //appUsagePerDay.Clear(); // cleared in SendDataToInfluxDB
                 warnedApps.Clear();
 
-                System.IO.File.Move(logFilePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"AppUsage-{lastResetDate:yyyy-dd-MM}.log"));
+                try
+                { 
+                    System.IO.File.Move(logFilePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"AppUsage-{lastResetDate:yyyy-dd-MM}.log"));
+                }
+                catch (Exception ex)
+                {
+                    EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+                }
 
                 lastResetDate = DateTime.Now.Date;
 
@@ -397,7 +433,15 @@ namespace TrackerAppService
             string signn = remainingTime < TimeSpan.Zero ? "-" : "";
 
             string logEntry = $"{now}: used:{appUsagePerDay[appTitle].ToString("hh\\:mm\\:ss")}, remains:{signn}{remainingTime.ToString("hh\\:mm\\:ss")}, {appTitle}";
-            System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
+
+            try
+            { 
+                System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+            }
         }
 
         private void CheckUsageLimit(string appTitle, int pid)
@@ -449,31 +493,46 @@ namespace TrackerAppService
 
         private void SummarizeUsage()
         {
-            using (StreamWriter writer = new StreamWriter(logFilePath, true))
-            {
-                writer.WriteLine("\nApplication Usage Summary:");
-                foreach (var entry in appUsagePerDay)
+            try
+            { 
+                using (StreamWriter writer = new StreamWriter(logFilePath, true))
                 {
-                    writer.WriteLine($"{entry.Key}: {entry.Value}");
+                    writer.WriteLine("\nApplication Usage Summary:");
+                    foreach (var entry in appUsagePerDay)
+                    {
+                        writer.WriteLine($"{entry.Key}: {entry.Value}");
+                    }
                 }
+
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
             }
         }
 
         private void SaveUsageAndCacheToFIle()
         {
-            System.IO.File.WriteAllText(lastResetDateFilePath, lastResetDate.ToString("yyyy-MM-dd"));
-
-            string json = JsonSerializer.Serialize(appUsagePerDay, new JsonSerializerOptions { WriteIndented = true });
-            System.IO.File.WriteAllText(appUsageFilePath, json);
-
-            if (cachePointData.Count > 0)
+            try
             {
-                json = JsonSerializer.Serialize(cachePointData, new JsonSerializerOptions { WriteIndented = true });
-                System.IO.File.WriteAllText(cacheFilePath, json);
+                System.IO.File.WriteAllText(lastResetDateFilePath, lastResetDate.ToString("yyyy-MM-dd"));
+
+                string json = JsonSerializer.Serialize(appUsagePerDay, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(appUsageFilePath, json);
+
+                if (cachePointData.Count > 0)
+                {
+                    json = JsonSerializer.Serialize(cachePointData, new JsonSerializerOptions { WriteIndented = true });
+                    System.IO.File.WriteAllText(cacheFilePath, json);
+                }
+                else if (System.IO.File.Exists(cacheFilePath))
+                {
+                    System.IO.File.Delete(cacheFilePath);
+                }
             }
-            else if (System.IO.File.Exists(cacheFilePath))
+            catch (Exception ex)
             {
-                System.IO.File.Delete(cacheFilePath);
+                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
             }
         }
 
@@ -553,7 +612,7 @@ namespace TrackerAppService
                 }
                 catch (Exception ex)
                 {
-                    EventLog.WriteEntry("TrackerAppService", $"Exception (RunPipeServerAsync): {ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+                    EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
                 }
             }
 
