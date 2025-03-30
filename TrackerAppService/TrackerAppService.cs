@@ -20,6 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using System.Windows.Input;
 using Windows.System;
+using Microsoft.Win32;
 //using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
@@ -46,10 +47,14 @@ namespace TrackerAppService
         string appUsageFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.json");
         string lastResetDateFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppLastResetDate.json");
         //string appListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppList.json");
+        bool IsSessionLocked = false;
 
         public TrackerAppService()
         {
             EventLog.WriteEntry("TrackerAppService", "Service class initialized", EventLogEntryType.Information);
+
+            SystemEvents.SessionSwitch += new SessionSwitchEventHandler(SystemEvents_SessionSwitch);
+
             InitializeComponent();
         }
 
@@ -57,6 +62,8 @@ namespace TrackerAppService
         ~TrackerAppService()
         {
             EventLog.WriteEntry("TrackerAppService", "Service class destructed", EventLogEntryType.Information);
+
+            SystemEvents.SessionSwitch -= new SessionSwitchEventHandler(SystemEvents_SessionSwitch);
         }
 
         private bool InfluxDBConfigOk()
@@ -98,7 +105,8 @@ namespace TrackerAppService
 
         private void SendDataToInfluxDB(DateTime? _dt = null)
         {
-            if (!InfluxDBConfigOk())
+
+            if (!InfluxDBConfigOk() || IsSessionLocked)
             {
                 return;
             }
@@ -360,6 +368,12 @@ namespace TrackerAppService
 
         private void TimerElapsed(object sender, ElapsedEventArgs e)
         {
+
+            if (IsSessionLocked)
+            {
+                return;
+            }
+
             ResetUsageIfNewDay();
 
             try
@@ -618,6 +632,22 @@ namespace TrackerAppService
 
             EventLog.WriteEntry("TrackerAppService", $"Task exit", EventLogEntryType.SuccessAudit);
         }
+
+        
+        void SystemEvents_SessionSwitch(object sender, SessionSwitchEventArgs e)
+        {
+            if (e.Reason == SessionSwitchReason.SessionLock)
+            {
+                IsSessionLocked = true;
+                EventLog.WriteEntry("TrackerAppService", $"SessionLock", EventLogEntryType.Information);
+            }
+            else if (e.Reason == SessionSwitchReason.SessionUnlock)
+            {
+                IsSessionLocked = false;
+                EventLog.WriteEntry("TrackerAppService", $"SessionUnlock", EventLogEntryType.Information);
+            }
+        }
+        
 
     }
 }
