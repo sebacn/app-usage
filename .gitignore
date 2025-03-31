@@ -5,3 +5,6 @@ TrackerAppService/obj
 TrackerAppService/.vs
 TrackerAppList
 SetupAppTracker/Release/
+/TrackerAppService/Properties/Settings.Designer.cs
+/TrackerAppService/Properties/Settings.settings
+/TrackerAppService/App.config
