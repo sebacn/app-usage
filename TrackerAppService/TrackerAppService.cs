@@ -39,7 +39,6 @@ namespace TrackerAppService
         private HashSet<string> trackedApps = new HashSet<string>();
         private DateTime lastResetDate = DateTime.Now.Date;
         Dictionary<DateTime, List<PointData>> cachePointData = new Dictionary<DateTime, List<PointData>>();
-        private PowerBroadcastStatus currPowerStatus;
         CancellationTokenSource pipeServerCTS = new CancellationTokenSource();
         Task pipeTask = null;
         Progress<Dictionary<string, int>> tprogress = new Progress<Dictionary<string, int>>();
@@ -79,7 +78,7 @@ namespace TrackerAppService
             DateTime now = DateTime.Now;
             int dow = (int)now.DayOfWeek;
 
-            foreach (var entry in appUsagePerDay)
+            foreach (var entry in appUsagePerDay.Where(k => (int)k.Value.TotalMinutes >= 1 || k.Value == TimeSpan.Zero))
             {
                 TimeSpan tslimit = TimeSpan.FromDays(1);
 
@@ -98,11 +97,20 @@ namespace TrackerAppService
                 ret.Add(point);
             }
 
+            //remove zero items
+            List<string> keys = new List<string>(appUsagePerDay.Keys);
+
+            foreach (string key in keys.Where(k => appUsagePerDay[k] == TimeSpan.Zero))
+            {
+                appUsagePerDay.Remove(key);
+            }
+
             return ret;
         }
 
         private void SendDataToInfluxDB(DateTime? _dt = null)
         {
+            List<PointData> lpd = null;
 
             if (!InfluxDBConfigOk() || IsSessionLocked)
             {
@@ -113,6 +121,7 @@ namespace TrackerAppService
 
             try
             {
+                lpd = GetPointDataList(dt);
 
                 X509Certificate2 x509Certificate2 = null;
 
@@ -153,10 +162,10 @@ namespace TrackerAppService
                                 var ex = @event.Exception;
 
                                 EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+
+                                throw ex;
                             }
                         };
-
-                        List<PointData> lpd =  GetPointDataList(dt);
 
                         if (cachePointData.Count > 0)
                         {
@@ -177,23 +186,12 @@ namespace TrackerAppService
                 }
 
                 cachePointData.Clear(); //clear cache if data sent ok
-
-                //remove zero items
-                List<string> keys = new List<string>(appUsagePerDay.Keys);
-
-                foreach (string key in keys.Where(k => appUsagePerDay[k] == TimeSpan.Zero))
-                {
-                    appUsagePerDay.Remove(key);
-                }
-
             }
             catch (Exception ex)
             {
 
-                if (!cachePointData.ContainsKey(dt))
+                if (!cachePointData.ContainsKey(dt) && lpd != null && lpd.Count > 0)
                 {
-                    List<PointData> lpd = GetPointDataList(dt);
-
                     cachePointData.Add(dt, lpd);
                 }
 
@@ -228,6 +226,7 @@ namespace TrackerAppService
 
             LoadTrackedApps();
             LoadUsageAndCacheFromFIle();
+            ResetUsageIfNewDay();
 
             timer = new System.Timers.Timer(10000); // Logs every 10 seconds
             timer.Elapsed += TimerElapsed;
@@ -287,14 +286,8 @@ namespace TrackerAppService
             {
                 EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
             }
-}
-
-        protected override bool OnPowerEvent(System.ServiceProcess.PowerBroadcastStatus powerStatus)
-        {
-            currPowerStatus = powerStatus;
-            EventLog.WriteEntry("TrackerAppService", $"Power event: {powerStatus}", EventLogEntryType.Warning);
-            return true;
         }
+
 
         protected override void OnSessionChange(SessionChangeDescription desc)
         {
@@ -419,7 +412,7 @@ namespace TrackerAppService
         {
             if (DateTime.Now.Date > lastResetDate.Date)
             {  
-                SendDataToInfluxDB(lastResetDate.AddDays(1).AddMinutes(-1)); //lastResetDate 23.59.00
+                SendDataToInfluxDB(lastResetDate.Date.AddDays(1).AddMinutes(-1).ToUniversalTime()); //lastResetDate 23.59.00
 
                 List<string> keys = new List<string>(appUsagePerDay.Keys);
 
@@ -428,7 +421,7 @@ namespace TrackerAppService
                     appUsagePerDay[key] = TimeSpan.Zero;
                 }
 
-                SendDataToInfluxDB(lastResetDate.AddDays(1)); //new Date 00.00.00
+                SendDataToInfluxDB(lastResetDate.Date.AddDays(1).ToUniversalTime()); //new Date 00.00.00
 
                 //appUsagePerDay.Clear(); // cleared in SendDataToInfluxDB
                 warnedApps.Clear();
