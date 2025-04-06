@@ -121,10 +121,11 @@ namespace TrackerAppService
             }
 
 
+
             ServiceBase[] ServicesToRun;
-            ServicesToRun = new ServiceBase[] 
-            { 
-                new TrackerAppService() 
+            ServicesToRun = new ServiceBase[]
+            {
+                new TrackerAppService()
             };
 
             ServiceBase.Run(ServicesToRun);

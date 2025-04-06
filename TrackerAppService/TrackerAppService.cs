@@ -23,14 +23,23 @@ using Windows.System;
 using Microsoft.Win32;
 using Windows.Devices.Custom;
 using System.Runtime.InteropServices;
+using Newtonsoft.Json.Linq;
 //using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
 {
- 
+
+    public class DataPoint
+    {
+        public String Host { get; set; }
+        public String Application { get; set; }
+        public int RunTimeMinutes { get; set; }
+        public int LimitTimeMinutes { get; set; }
+    }
 
     public partial class TrackerAppService : ServiceBase
     {
+        public bool LogDataPoint;
 
         private System.Timers.Timer timer, timer1min;
         private Dictionary<string, TimeSpan> appUsagePerDay = new Dictionary<string, TimeSpan>();
@@ -38,17 +47,21 @@ namespace TrackerAppService
         private HashSet<string> warnedApps = new HashSet<string>();
         private HashSet<string> trackedApps = new HashSet<string>();
         private DateTime lastResetDate = DateTime.Now.Date;
-        Dictionary<DateTime, List<PointData>> cachePointData = new Dictionary<DateTime, List<PointData>>();
+        //Dictionary<DateTime, List<PointData>> cachePointData = new Dictionary<DateTime, List<PointData>>();
         CancellationTokenSource pipeServerCTS = new CancellationTokenSource();
         Task pipeTask = null;
         Progress<Dictionary<string, int>> tprogress = new Progress<Dictionary<string, int>>();
 
         string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
-        string cacheFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppCachePointDataInfluxDB.json");
+        string influxPointBuffFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppInfluxDB2PointData.json");
         string appUsageFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.json");
         string lastResetDateFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppLastResetDate.json");
+
+        string pointDataLogFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppPointDataLog.json");
         //string appListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppList.json");
         bool IsSessionLocked = false;
+
+        Dictionary<DateTime, List<DataPoint>> InfluxPointBuff = new Dictionary<DateTime, List<DataPoint>>();
 
         public TrackerAppService()
         {
@@ -71,9 +84,9 @@ namespace TrackerAppService
                 && !string.IsNullOrEmpty(Properties.Settings.Default.influxBucket));
         }
 
-        List<PointData>  GetPointDataList(DateTime dt)
+        public void AddInfluxPointData(DateTime dt)
         {
-            List<PointData> ret = new List<PointData>();
+            List<DataPoint> ret = new List<DataPoint>();
 
             DateTime now = DateTime.Now;
             int dow = (int)now.DayOfWeek;
@@ -86,16 +99,26 @@ namespace TrackerAppService
                 {
                     tslimit = (TimeSpan)appUsageLimits[entry.Key].GetValue(dow);
                 }
-
+                /*
                 var point = PointData.Measurement("tracker-app")
                     .Tag("host", Environment.MachineName)
                     .Tag("application", entry.Key)
                     .Field("run-time-minutes", (int)entry.Value.TotalMinutes)
                     .Field("limit-time-minutes", (int)tslimit.TotalMinutes)
                     .Timestamp(dt, WritePrecision.S);
+                */
+
+                var point = new DataPoint {
+                    Host = Environment.MachineName,
+                    Application = entry.Key,
+                    RunTimeMinutes = (int)entry.Value.TotalMinutes,
+                    LimitTimeMinutes = (int)tslimit.TotalMinutes
+                };
 
                 ret.Add(point);
             }
+
+            InfluxPointBuff.Add(dt, ret);
 
             //remove zero items
             List<string> keys = new List<string>(appUsagePerDay.Keys);
@@ -105,23 +128,42 @@ namespace TrackerAppService
                 appUsagePerDay.Remove(key);
             }
 
-            return ret;
+            //log
+            if (InfluxPointBuff.ContainsKey(dt) && InfluxPointBuff[dt].Count > 0 ) //&& LogDataPoint)
+            {
+                Dictionary<DateTime, List<DataPoint>> logret = new Dictionary<DateTime, List<DataPoint>>
+                {
+                    { dt, ret }
+                };
+
+                var json = JsonSerializer.Serialize(logret, new JsonSerializerOptions { WriteIndented = true });
+
+                try
+                {
+                    System.IO.File.AppendAllText(pointDataLogFilePath, json);
+                }
+                catch (Exception ex)
+                {
+                    EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+                }
+            }
         }
 
-        private void SendDataToInfluxDB(DateTime? _dt = null)
-        {
-            List<PointData> lpd = null;
+        private void SendDataToInfluxDB()//DateTime? _dt = null)
+        { 
 
-            if (!InfluxDBConfigOk() || IsSessionLocked)
+            if (!InfluxDBConfigOk() || IsSessionLocked || InfluxPointBuff.Count == 0)
             {
                 return;
             }
 
-            DateTime dt = _dt ?? DateTime.UtcNow;
+            //DateTime dt = _dt ?? DateTime.UtcNow;
+            List<PointData> lpd = new List<PointData>();
+            List<DateTime> keys = new List<DateTime>();
 
             try
             {
-                lpd = GetPointDataList(dt);
+                //lpd = GetPointDataList(dt);
 
                 X509Certificate2 x509Certificate2 = null;
 
@@ -167,6 +209,7 @@ namespace TrackerAppService
                             }
                         };
 
+                        /*
                         if (cachePointData.Count > 0)
                         {
                             foreach (var item in cachePointData)
@@ -177,6 +220,27 @@ namespace TrackerAppService
                                 }
                             }
                         }
+                        */
+
+                        keys = new List<DateTime>(InfluxPointBuff.Keys);
+
+                        foreach (var key in keys)
+                        {
+                            List<DataPoint> listPoints = InfluxPointBuff[key];
+
+                            foreach (var point in listPoints)
+                            {
+                                var influxPoint = PointData.Measurement("tracker-app")
+                                    .Tag("host", point.Host)
+                                    .Tag("application", point.Application)
+                                    .Field("run-time-minutes", point.RunTimeMinutes)
+                                    .Field("limit-time-minutes", point.LimitTimeMinutes)
+                                    .Timestamp(key, WritePrecision.S);
+
+                                lpd.Add(influxPoint);
+                            }
+                            
+                        }
 
                         if (lpd.Count > 0)
                         {
@@ -185,37 +249,26 @@ namespace TrackerAppService
                     }
                 }
 
-                cachePointData.Clear(); //clear cache if data sent ok
+                //remove processed keys
+                foreach (var key in keys)
+                {
+                    InfluxPointBuff.Remove(key);
+                }
             }
             catch (Exception ex)
             {
-
-                if (!cachePointData.ContainsKey(dt) && lpd != null && lpd.Count > 0)
-                {
-                    cachePointData.Add(dt, lpd);
-                }
-
                 EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
             }
-
-            if (cachePointData.Count == 0 
-             && System.IO.File.Exists(cacheFilePath))
-            {
-                try
-                {
-                    System.IO.File.Delete(cacheFilePath);
-                }
-                catch (Exception ex)
-                {
-                    EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
-                }
-            }
-
         }
 
         protected override void OnStart(string[] args)
         {
             //Properties.Settings.Default.Save();
+
+            if (args != null && args.Length > 0 && args[0].StartsWith("LogDataPointEnable"))
+            {
+                LogDataPoint = true;
+            }
 
             if (!EventLog.SourceExists("TrackerAppService"))
             {
@@ -295,14 +348,14 @@ namespace TrackerAppService
             {
                 case SessionChangeReason.SessionLogon:
                 case SessionChangeReason.SessionUnlock:
-                case SessionChangeReason.RemoteConnect:
+                //case SessionChangeReason.RemoteConnect:
                     //var user = CustomService.UserInformation(desc.SessionId);
                     IsSessionLocked = false;
                     break;
 
                 case SessionChangeReason.SessionLock:
                 case SessionChangeReason.SessionLogoff:
-                case SessionChangeReason.RemoteDisconnect:
+                //case SessionChangeReason.RemoteDisconnect:
                     IsSessionLocked = true;
                     break;
             }
@@ -370,10 +423,10 @@ namespace TrackerAppService
 
             }
 
-            if (System.IO.File.Exists(cacheFilePath))
+            if (System.IO.File.Exists(influxPointBuffFilePath))
             {
-                string json = System.IO.File.ReadAllText(cacheFilePath);
-                cachePointData = JsonSerializer.Deserialize<Dictionary<DateTime, List<PointData>>>(json) ?? new Dictionary<DateTime, List<PointData>>();
+                string json = System.IO.File.ReadAllText(influxPointBuffFilePath);
+                InfluxPointBuff = JsonSerializer.Deserialize<Dictionary<DateTime, List<DataPoint>>>(json) ?? new Dictionary<DateTime, List<DataPoint>>();
             }
         }
 
@@ -405,14 +458,20 @@ namespace TrackerAppService
 
         private void Timer1minElapsed(object sender, ElapsedEventArgs e)
         {
-            SendDataToInfluxDB();
+            if (InfluxDBConfigOk())
+            {
+                AddInfluxPointData(DateTime.UtcNow);
+
+                SendDataToInfluxDB();
+            }
         }
 
         private void ResetUsageIfNewDay()
         {
             if (DateTime.Now.Date > lastResetDate.Date)
             {  
-                SendDataToInfluxDB(lastResetDate.Date.AddDays(1).AddMinutes(-1).ToUniversalTime()); //lastResetDate 23.59.00
+                //SendDataToInfluxDB(lastResetDate.Date.AddDays(1).AddMinutes(-1).ToUniversalTime()); //lastResetDate 23.59.00
+                AddInfluxPointData(lastResetDate.Date.AddDays(1).AddMinutes(-1).ToUniversalTime());
 
                 List<string> keys = new List<string>(appUsagePerDay.Keys);
 
@@ -421,7 +480,7 @@ namespace TrackerAppService
                     appUsagePerDay[key] = TimeSpan.Zero;
                 }
 
-                SendDataToInfluxDB(lastResetDate.Date.AddDays(1).ToUniversalTime()); //new Date 00.00.00
+                AddInfluxPointData(lastResetDate.Date.AddDays(1).ToUniversalTime()); //new Date 00.00.00
 
                 //appUsagePerDay.Clear(); // cleared in SendDataToInfluxDB
                 warnedApps.Clear();
@@ -546,14 +605,14 @@ namespace TrackerAppService
                 string json = JsonSerializer.Serialize(appUsagePerDay, new JsonSerializerOptions { WriteIndented = true });
                 System.IO.File.WriteAllText(appUsageFilePath, json);
 
-                if (cachePointData.Count > 0)
+                if (InfluxPointBuff.Count > 0)
                 {
-                    json = JsonSerializer.Serialize(cachePointData, new JsonSerializerOptions { WriteIndented = true });
-                    System.IO.File.WriteAllText(cacheFilePath, json);
+                    json = JsonSerializer.Serialize(InfluxPointBuff, new JsonSerializerOptions { WriteIndented = true });
+                    System.IO.File.WriteAllText(influxPointBuffFilePath, json);
                 }
-                else if (System.IO.File.Exists(cacheFilePath))
+                else if (System.IO.File.Exists(influxPointBuffFilePath))
                 {
-                    System.IO.File.Delete(cacheFilePath);
+                    System.IO.File.Delete(influxPointBuffFilePath);
                 }
             }
             catch (Exception ex)
@@ -593,10 +652,10 @@ namespace TrackerAppService
                 System.IO.File.WriteAllText(appUsageFilePath, json);
             }
 
-            if (System.IO.File.Exists(cacheFilePath))
+            if (System.IO.File.Exists(influxPointBuffFilePath))
             {
-                string json = System.IO.File.ReadAllText(cacheFilePath);
-                cachePointData = JsonSerializer.Deserialize< Dictionary < DateTime, List < PointData >>> (json) ?? new Dictionary<DateTime, List<PointData>>();
+                string json = System.IO.File.ReadAllText(influxPointBuffFilePath);
+                InfluxPointBuff = JsonSerializer.Deserialize< Dictionary < DateTime, List <DataPoint>>> (json) ?? new Dictionary<DateTime, List<DataPoint>>();
             }
 
         }
