@@ -88,6 +88,8 @@ namespace TrackerAppService
         {
             List<DataPoint> ret = new List<DataPoint>();
 
+            ResetUsageIfNewDay();
+
             DateTime now = DateTime.Now;
             int dow = (int)now.DayOfWeek;
 
@@ -279,7 +281,6 @@ namespace TrackerAppService
 
             LoadTrackedApps();
             LoadUsageAndCacheFromFIle();
-            ResetUsageIfNewDay();
 
             timer = new System.Timers.Timer(10000); // Logs every 10 seconds
             timer.Elapsed += TimerElapsed;
@@ -439,8 +440,6 @@ namespace TrackerAppService
                 return;
             }
 
-            ResetUsageIfNewDay();
-
             try
             {
                 ProcessServices pss = new ProcessServices();
@@ -469,9 +468,12 @@ namespace TrackerAppService
         private void ResetUsageIfNewDay()
         {
             if (DateTime.Now.Date > lastResetDate.Date)
-            {  
-                //SendDataToInfluxDB(lastResetDate.Date.AddDays(1).AddMinutes(-1).ToUniversalTime()); //lastResetDate 23.59.00
-                AddInfluxPointData(lastResetDate.Date.AddDays(1).AddMinutes(-1).ToUniversalTime());
+            {
+                var newDate = lastResetDate.Date.AddDays(1);
+
+                lastResetDate = DateTime.Now.Date;
+
+                AddInfluxPointData(newDate.AddMinutes(-1).ToUniversalTime());
 
                 List<string> keys = new List<string>(appUsagePerDay.Keys);
 
@@ -480,7 +482,7 @@ namespace TrackerAppService
                     appUsagePerDay[key] = TimeSpan.Zero;
                 }
 
-                AddInfluxPointData(lastResetDate.Date.AddDays(1).ToUniversalTime()); //new Date 00.00.00
+                AddInfluxPointData(newDate.ToUniversalTime()); //new Date 00.00.00
 
                 //appUsagePerDay.Clear(); // cleared in SendDataToInfluxDB
                 warnedApps.Clear();
@@ -494,7 +496,7 @@ namespace TrackerAppService
                     EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
                 }
 
-                lastResetDate = DateTime.Now.Date;
+                
 
                 SaveUsageAndCacheToFIle();
             }
