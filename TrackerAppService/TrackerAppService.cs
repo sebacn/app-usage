@@ -131,7 +131,7 @@ namespace TrackerAppService
             }
 
             //log
-            if (InfluxPointBuff.ContainsKey(dt) && InfluxPointBuff[dt].Count > 0 ) //&& LogDataPoint)
+            if (InfluxPointBuff.ContainsKey(dt) && InfluxPointBuff[dt].Count > 0 && LogDataPoint)
             {
                 Dictionary<DateTime, List<DataPoint>> logret = new Dictionary<DateTime, List<DataPoint>>
                 {
@@ -349,14 +349,17 @@ namespace TrackerAppService
             {
                 case SessionChangeReason.SessionLogon:
                 case SessionChangeReason.SessionUnlock:
-                //case SessionChangeReason.RemoteConnect:
                     //var user = CustomService.UserInformation(desc.SessionId);
                     IsSessionLocked = false;
                     break;
 
-                case SessionChangeReason.SessionLock:
+                
                 case SessionChangeReason.SessionLogoff:
-                //case SessionChangeReason.RemoteDisconnect:
+                    SaveUsageAndCacheToFIle();
+                    IsSessionLocked = true;
+                    break;
+
+                case SessionChangeReason.SessionLock:
                     IsSessionLocked = true;
                     break;
             }
@@ -471,8 +474,10 @@ namespace TrackerAppService
             {
                 var newDate = lastResetDate.Date.AddDays(1);
 
-                lastResetDate = DateTime.Now.Date;
+                EventLog.WriteEntry("TrackerAppService", $"Date now: {DateTime.Now.Date}, Last reset date: {lastResetDate.Date}, New date: {newDate}", EventLogEntryType.Warning);
 
+                lastResetDate = DateTime.Now.Date;
+               
                 AddInfluxPointData(newDate.AddMinutes(-1).ToUniversalTime());
 
                 List<string> keys = new List<string>(appUsagePerDay.Keys);
