@@ -64,6 +64,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="HttpServer.cs" />
     <Compile Include="IProcessServices.cs" />
     <Compile Include="ProcessServices.cs" />
     <Compile Include="ProjectInstaller.cs">

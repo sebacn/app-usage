@@ -24,6 +24,9 @@ using Microsoft.Win32;
 using Windows.Devices.Custom;
 using System.Runtime.InteropServices;
 using Newtonsoft.Json.Linq;
+using System.Net.Sockets;
+using System.Net;
+using System.Xml.Linq;
 //using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
@@ -32,22 +35,44 @@ namespace TrackerAppService
     public class DataPoint
     {
         public String Host { get; set; }
+        public String IP { get; set; }
         public String Application { get; set; }
         public int RunTimeMinutes { get; set; }
         public int LimitTimeMinutes { get; set; }
+    }
+
+    public class AppLimitConfig
+    {
+        public String AppName { get; set; }
+        public TimeSpan ActiveFromTime { get; set; }
+        public TimeSpan ActiveToTime { get; set; }
+        public  Dictionary<DayOfWeek, TimeSpan> UsageLimitsPerDay { get; set; }
+
+        public void initDefault(string _appName)
+        {
+            AppName = _appName;
+            ActiveFromTime = TimeSpan.FromMinutes(1);
+            ActiveToTime = TimeSpan.FromHours(24) + TimeSpan.FromMinutes(-1);
+
+            UsageLimitsPerDay = new Dictionary<DayOfWeek, TimeSpan>();
+
+            for (int i = 0; i < 7; i++)
+            {
+                DayOfWeek dow = (DayOfWeek)i;
+                UsageLimitsPerDay.Add(dow, TimeSpan.FromHours(24) + TimeSpan.FromMinutes(-1));
+            } 
+        }
     }
 
     public partial class TrackerAppService : ServiceBase
     {
         public bool LogDataPoint;
 
-        private System.Timers.Timer timer, timer1min;
-        private Dictionary<string, TimeSpan> appUsagePerDay = new Dictionary<string, TimeSpan>();
-        private Dictionary<string, TimeSpan[]> appUsageLimits = new Dictionary<string, TimeSpan[]>();
+        private System.Timers.Timer timer10sec, timer1min;
+        public Dictionary<string, TimeSpan> appUsagePerDay = new Dictionary<string, TimeSpan>();
         private HashSet<string> warnedApps = new HashSet<string>();
-        private HashSet<string> trackedApps = new HashSet<string>();
-        private DateTime lastResetDate = DateTime.Now.Date;
-        //Dictionary<DateTime, List<PointData>> cachePointData = new Dictionary<DateTime, List<PointData>>();
+        //private HashSet<string> trackedApps = new HashSet<string>();
+        public DateTime lastResetDate = DateTime.Now.Date;
         CancellationTokenSource pipeServerCTS = new CancellationTokenSource();
         Task pipeTask = null;
         Progress<Dictionary<string, int>> tprogress = new Progress<Dictionary<string, int>>();
@@ -55,13 +80,13 @@ namespace TrackerAppService
         string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
         string influxPointBuffFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppInfluxDB2PointData.json");
         string appUsageFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.json");
+        string appUsageLimitsFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsageLimits.json");
         string lastResetDateFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppLastResetDate.json");
-
         string pointDataLogFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppPointDataLog.json");
-        //string appListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppList.json");
         bool IsSessionLocked = false;
 
         Dictionary<DateTime, List<DataPoint>> InfluxPointBuff = new Dictionary<DateTime, List<DataPoint>>();
+        public Dictionary<string, AppLimitConfig> appUsageLimitsDict = new Dictionary<string, AppLimitConfig>();
 
         public TrackerAppService()
         {
@@ -90,28 +115,20 @@ namespace TrackerAppService
 
             ResetUsageIfNewDay();
 
-            DateTime now = DateTime.Now;
-            int dow = (int)now.DayOfWeek;
+            DateTime dtnow = DateTime.Now;
 
             foreach (var entry in appUsagePerDay.Where(k => (int)k.Value.TotalMinutes >= 1 || k.Value == TimeSpan.Zero))
             {
                 TimeSpan tslimit = TimeSpan.FromDays(1);
 
-                if (appUsageLimits.ContainsKey(entry.Key))
+                if (appUsageLimitsDict.ContainsKey(entry.Key))
                 {
-                    tslimit = (TimeSpan)appUsageLimits[entry.Key].GetValue(dow);
+                    tslimit = appUsageLimitsDict[entry.Key].UsageLimitsPerDay[dtnow.DayOfWeek];
                 }
-                /*
-                var point = PointData.Measurement("tracker-app")
-                    .Tag("host", Environment.MachineName)
-                    .Tag("application", entry.Key)
-                    .Field("run-time-minutes", (int)entry.Value.TotalMinutes)
-                    .Field("limit-time-minutes", (int)tslimit.TotalMinutes)
-                    .Timestamp(dt, WritePrecision.S);
-                */
 
                 var point = new DataPoint {
                     Host = Environment.MachineName,
+                    IP = GetLocalIPAddress(),
                     Application = entry.Key,
                     RunTimeMinutes = (int)entry.Value.TotalMinutes,
                     LimitTimeMinutes = (int)tslimit.TotalMinutes
@@ -234,6 +251,7 @@ namespace TrackerAppService
                             {
                                 var influxPoint = PointData.Measurement("tracker-app")
                                     .Tag("host", point.Host)
+                                    .Tag("ip", point.IP)
                                     .Tag("application", point.Application)
                                     .Field("run-time-minutes", point.RunTimeMinutes)
                                     .Field("limit-time-minutes", point.LimitTimeMinutes)
@@ -279,12 +297,12 @@ namespace TrackerAppService
 
             EventLog.WriteEntry("TrackerAppService", "Service started", EventLogEntryType.Information);
 
-            LoadTrackedApps();
+            //LoadTrackedApps();
             LoadUsageAndCacheFromFIle();
 
-            timer = new System.Timers.Timer(10000); // Logs every 10 seconds
-            timer.Elapsed += TimerElapsed;
-            timer.Start();
+            timer10sec = new System.Timers.Timer(10000); // Logs every 10 seconds
+            timer10sec.Elapsed += TimerElapsed10sec;
+            timer10sec.Start();
 
             if (InfluxDBConfigOk())
             {
@@ -308,14 +326,20 @@ namespace TrackerAppService
             SummarizeUsage();
 
             RunPipeServer();
+
+            if (Properties.Settings.Default.webEnabled)
+            {
+                Task.Run(() => HttpServer.RunWebServerAsync(pipeServerCTS.Token, this));
+            }
+            
         }
 
         protected override void OnStop()
         {
             EventLog.WriteEntry("TrackerAppService", "Service stopped", EventLogEntryType.Information);
 
-            timer.Stop();
-            timer.Dispose();
+            timer10sec.Stop();
+            timer10sec.Dispose();
 
             pipeServerCTS.Cancel();
             pipeTask.Wait(1000);
@@ -398,33 +422,15 @@ namespace TrackerAppService
             });
         }
 
+        /*
         private void LoadTrackedApps()
         {
-            appUsageLimits.Clear();
+            appUsageLimitsDict.Clear();
 
-            foreach (var line in Properties.Settings.Default.appUsageLimits)
+            if (System.IO.File.Exists(appUsageLimitsFilePath))
             {
-                var parts = line.Split(',');
-
-                string appName = parts[0].Trim();
-                trackedApps.Add(appName);
-
-                TimeSpan[] ts = new TimeSpan[7];
-
-                for (int idx=1; idx < parts.Length; idx++)
-                {
-                    if (TimeSpan.TryParse(parts[idx].Trim(), out TimeSpan limit))
-                    {
-                        ts.SetValue(limit, idx-1);// = limit;
-                    }
-                    else
-                    {
-                        ts.SetValue(TimeSpan.FromHours(1), idx-1); //= TimeSpan.FromHours(1); // Default 1 hour
-                    }
-                }
-
-                appUsageLimits.Add(appName, ts);
-
+                string json = System.IO.File.ReadAllText(appUsageLimitsFilePath);
+                appUsageLimitsDict = JsonSerializer.Deserialize<Dictionary<string, AppLimitConfig>> (json) ?? new Dictionary<string, AppLimitConfig>();
             }
 
             if (System.IO.File.Exists(influxPointBuffFilePath))
@@ -433,9 +439,9 @@ namespace TrackerAppService
                 InfluxPointBuff = JsonSerializer.Deserialize<Dictionary<DateTime, List<DataPoint>>>(json) ?? new Dictionary<DateTime, List<DataPoint>>();
             }
         }
+        */
 
-
-        private void TimerElapsed(object sender, ElapsedEventArgs e)
+        private void TimerElapsed10sec(object sender, ElapsedEventArgs e)
         {
 
             if (IsSessionLocked)
@@ -511,20 +517,20 @@ namespace TrackerAppService
         private void LogUsage(string appTitle)
         {
             TimeSpan duration = TimeSpan.Zero;
-            DateTime now = DateTime.Now;
+            DateTime dtnow = DateTime.Now;
 
             TimeSpan remainingTime = TimeSpan.FromDays(1) - TimeSpan.FromSeconds(1);
 
-            if (appUsageLimits.ContainsKey(appTitle))
+            if (appUsageLimitsDict.ContainsKey(appTitle))
             {
-                int dow = (int)now.DayOfWeek; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
-                TimeSpan appLimit = (TimeSpan)appUsageLimits[appTitle].GetValue(dow);
+                TimeSpan appLimit = appUsageLimitsDict[appTitle].UsageLimitsPerDay[dtnow.DayOfWeek]; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
+
                 remainingTime = appLimit - appUsagePerDay[appTitle];
             }
 
             string signn = remainingTime < TimeSpan.Zero ? "-" : "";
 
-            string logEntry = $"{now}: used:{appUsagePerDay[appTitle].ToString("hh\\:mm\\:ss")}, remains:{signn}{remainingTime.ToString("hh\\:mm\\:ss")}, {appTitle}";
+            string logEntry = $"{dtnow}: used:{appUsagePerDay[appTitle].ToString("hh\\:mm\\:ss")}, remains:{signn}{remainingTime.ToString("hh\\:mm\\:ss")}, {appTitle}";
 
             try
             { 
@@ -538,13 +544,20 @@ namespace TrackerAppService
 
         private void CheckUsageLimit(string appTitle, int pid)
         {
-            if (appUsagePerDay.ContainsKey(appTitle) && appUsageLimits.ContainsKey(appTitle))
+            if (appUsagePerDay.ContainsKey(appTitle) && appUsageLimitsDict.ContainsKey(appTitle))
             {
-                DateTime now = DateTime.Now;
-                int dow = (int)now.DayOfWeek; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
-                TimeSpan appLimit = (TimeSpan)appUsageLimits[appTitle].GetValue(dow);
+                DateTime dtnow = DateTime.Now;
 
-                TimeSpan remainingTime = appLimit - appUsagePerDay[appTitle];                
+                var appCfg = appUsageLimitsDict[appTitle];
+
+                TimeSpan appLimit = appCfg.UsageLimitsPerDay[dtnow.DayOfWeek]; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
+
+                TimeSpan remainingTime = appLimit - appUsagePerDay[appTitle];
+                
+                if (appCfg.ActiveFromTime > (dtnow - dtnow.Date) || appCfg.ActiveToTime < (dtnow - dtnow.Date))
+                {
+                    remainingTime = TimeSpan.Zero;
+                }
 
                 if (remainingTime <= TimeSpan.Zero)
                 {
@@ -628,6 +641,19 @@ namespace TrackerAppService
             }
         }
 
+        public void SaveAppUsageLimitsToFile()
+        {
+            try
+            {
+                string json = JsonSerializer.Serialize(appUsageLimitsDict, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(appUsageLimitsFilePath, json);
+            }
+            catch (Exception ex)
+            {
+                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+            }
+        }
+
         private void LoadUsageAndCacheFromFIle()
         {
             appUsagePerDay.Clear();
@@ -663,6 +689,29 @@ namespace TrackerAppService
             {
                 string json = System.IO.File.ReadAllText(influxPointBuffFilePath);
                 InfluxPointBuff = JsonSerializer.Deserialize< Dictionary < DateTime, List <DataPoint>>> (json) ?? new Dictionary<DateTime, List<DataPoint>>();
+            }
+
+            appUsageLimitsDict.Clear();
+
+            if (System.IO.File.Exists(appUsageLimitsFilePath))
+            {
+                string json = System.IO.File.ReadAllText(appUsageLimitsFilePath);
+                appUsageLimitsDict = JsonSerializer.Deserialize<Dictionary<string, AppLimitConfig>>(json) ?? new Dictionary<string, AppLimitConfig>();
+            }
+            else
+            {
+                //write default
+
+                if (appUsageLimitsDict.Count == 0)
+                {
+                    var appCfg = new AppLimitConfig();
+                    appCfg.initDefault("notepad");
+
+                    appUsageLimitsDict.Add(appCfg.AppName, appCfg);
+                }
+
+                string json = JsonSerializer.Serialize(appUsageLimitsDict, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(appUsageLimitsFilePath, json);
             }
 
         }
@@ -709,6 +758,19 @@ namespace TrackerAppService
             }
 
             EventLog.WriteEntry("TrackerAppService", $"Task exit", EventLogEntryType.SuccessAudit);
+        }
+
+        public string GetLocalIPAddress()
+        {
+            var host = Dns.GetHostEntry(Dns.GetHostName());
+            foreach (var ip in host.AddressList)
+            {
+                if (ip.AddressFamily == AddressFamily.InterNetwork)
+                {
+                    return ip.ToString();
+                }
+            }
+            return "";
         }
 
         /*
