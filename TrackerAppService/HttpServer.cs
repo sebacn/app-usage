@@ -349,7 +349,7 @@ namespace TrackerAppService
             </style>
             </head>
             <body>
-                <h2>Tracker app {DateTime.Now} ver: {Assembly.GetEntryAssembly().GetName().Version}</h2>
+                <h2>Tracker app (Host: {Environment.MachineName}, Ver: {Assembly.GetEntryAssembly().GetName().Version})   {DateTime.Now}</h2>
                 <ul>
                   <li><a href=""/"">Home</a></li>
                   <li><a href=""/settings"">Settings</a></li>
