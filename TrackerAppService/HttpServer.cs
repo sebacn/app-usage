@@ -63,6 +63,8 @@ namespace TrackerAppService
 
         public static async Task RunWebServerAsync(CancellationToken ct, TrackerAppService _appService)
         {
+            EventLog.WriteEntry("TrackerAppService", $"Run WebServer Async", EventLogEntryType.Information);
+
             HttpListener listener = new HttpListener();
             listener.Prefixes.Add($"http://{GetLocalIPAddress()}:{Properties.Settings.Default.webPort}/");
             listener.AuthenticationSchemes = AuthenticationSchemes.Basic;
@@ -71,7 +73,7 @@ namespace TrackerAppService
 
             listener.Start();
 
-            EventLog.WriteEntry("TrackerAppService", $"HTTP address: {listener.Prefixes.First()}", EventLogEntryType.SuccessAudit);
+            EventLog.WriteEntry("TrackerAppService", $"HTTP address: {listener.Prefixes.First()}", EventLogEntryType.Information);
 
             //Console.WriteLine("Server started at http://localhost:8080/");
 
@@ -261,6 +263,7 @@ namespace TrackerAppService
 
         static async void ServeInfoPage(HttpListenerContext context, TrackerAppService _appService)
         {
+            /*
             var appUsageLimitsDict = new Dictionary<string, AppLimitConfig>();
 
             string appUsageLimitsFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsageLimits.json");
@@ -270,28 +273,35 @@ namespace TrackerAppService
                 string json = System.IO.File.ReadAllText(appUsageLimitsFilePath);
                 appUsageLimitsDict = JsonSerializer.Deserialize<Dictionary<string, AppLimitConfig>>(json) ?? new Dictionary<string, AppLimitConfig>();
             }
+            */
+            var newDictionary = _appService.appUsagePerDay.ToDictionary(entry => entry.Key, entry => entry.Value);
 
             DateTime dtnow = DateTime.Now;
             string trows = "";
-            foreach (var appUsage in _appService.appUsagePerDay)
+            foreach (var appUsage in newDictionary)
             {
+                string tdstyle = "";
                 AppLimitConfig appLimit = new AppLimitConfig();
                 appLimit.initDefault(appUsage.Key);
 
-                if (appUsageLimitsDict.ContainsKey(appUsage.Key))
+                if (_appService.appUsageLimitsDict.ContainsKey(appUsage.Key))
                 {
-                    appLimit = appUsageLimitsDict[appUsage.Key];
+                    appLimit = _appService.appUsageLimitsDict[appUsage.Key];
+                    tdstyle = "style='background-color: lightgreen;'";
                 }
 
-                TimeSpan ts = appLimit.UsageLimitsPerDay[dtnow.DayOfWeek] > appLimit.ActiveToTime - appLimit.ActiveFromTime ? appLimit.UsageLimitsPerDay[dtnow.DayOfWeek] : appLimit.ActiveToTime - appLimit.ActiveFromTime;
+                TimeSpan tsWindow = appLimit.ActiveToTime - appLimit.ActiveFromTime;
+                TimeSpan tsLimit = appLimit.UsageLimitsPerDay[dtnow.DayOfWeek];
 
-                double usagePct = appUsage.Value.TotalMinutes/ts.TotalMinutes *100;
+                tsLimit = tsLimit > tsWindow ? tsWindow : tsLimit;
 
-                trows += $"<tr><td>{appUsage.Key}</td><td><div class=\"bg\" style=\"width: {usagePct:0.##}%\"></div>{usagePct:0.##}</td><td>{appUsage.Value}</td>" +
+                double usagePct = appUsage.Value.TotalMinutes/tsLimit.TotalMinutes *100;
+
+                trows += $"<tr><td>{appUsage.Key}</td><td style='z-index: 1;'><div class='bg' style='width: {usagePct:0.##}%;'></div>{usagePct:0.##}</td><td>{appUsage.Value}</td>" +
                     $"<td>{appLimit.UsageLimitsPerDay[dtnow.DayOfWeek]:hh\\:mm}</td>" +
                     $"<td>{appLimit.ActiveFromTime:hh\\:mm}</td>" +
                     $"<td>{appLimit.ActiveToTime:hh\\:mm}</td>" +
-                    $"<td>{appUsageLimitsDict.ContainsKey(appUsage.Key)}</td></tr>";
+                    $"<td {tdstyle}>{_appService.appUsageLimitsDict.ContainsKey(appUsage.Key)}</td></tr>";
             }
 
             string html = $@"
@@ -350,7 +360,7 @@ namespace TrackerAppService
                     <th>Application</th>
                     <th>Usage %</th>
                     <th>Usage time</th>
-                    <th>Limit {dtnow.DayOfWeek}</th>
+                    <th>Limit ({dtnow.DayOfWeek})</th>
                     <th>Active from time</th>
                     <th>Active to time</th>
                     <th>App config</th>

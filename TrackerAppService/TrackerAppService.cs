@@ -327,6 +327,8 @@ namespace TrackerAppService
 
             RunPipeServer();
 
+            //Thread.Sleep(30000); // debug
+
             if (Properties.Settings.Default.webEnabled)
             {
                 Task.Run(() => HttpServer.RunWebServerAsync(pipeServerCTS.Token, this));

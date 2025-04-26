@@ -3,30 +3,34 @@
   <Profiles />
   <Settings>
     <Setting Name="influxUrl" Type="System.String" Scope="User">
-      <Value Profile="(Default)">https://url3434.com</Value>
+      <Value Profile="(Default)">123</Value>
     </Setting>
     <Setting Name="influxToken" Type="System.String" Scope="User">
-      <Value Profile="(Default)">ttokenn</Value>
+      <Value Profile="(Default)">123</Value>
     </Setting>
     <Setting Name="influxOrg" Type="System.String" Scope="User">
-      <Value Profile="(Default)">iforgg</Value>
+      <Value Profile="(Default)">123</Value>
     </Setting>
     <Setting Name="influxBucket" Type="System.String" Scope="User">
-      <Value Profile="(Default)">bucket</Value>
-    </Setting>
-    <Setting Name="appUsageLimits" Type="System.Collections.Specialized.StringCollection" Scope="User">
-      <Value Profile="(Default)">&lt;?xml version="1.0" encoding="utf-16"?&gt;
-&lt;ArrayOfString xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"&gt;
-  &lt;string&gt;notepad,11:30:00,11:30:00,00:20:00,00:20:00,11:30:00,11:30:00,11:30:00&lt;/string&gt;
-  &lt;string&gt;chrome,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00&lt;/string&gt;
-  &lt;string&gt;word,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00&lt;/string&gt;
-&lt;/ArrayOfString&gt;</Value>
+      <Value Profile="(Default)">123</Value>
     </Setting>
     <Setting Name="influxCertKeyFileName" Type="System.String" Scope="User">
-      <Value Profile="(Default)">cert.pfx</Value>
+      <Value Profile="(Default)">123</Value>
     </Setting>
     <Setting Name="influxCertKeyPass" Type="System.String" Scope="User">
-      <Value Profile="(Default)">cert_pass</Value>
+      <Value Profile="(Default)">123</Value>
+    </Setting>
+    <Setting Name="webEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="webPort" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">8080</Value>
+    </Setting>
+    <Setting Name="webUser" Type="System.String" Scope="User">
+      <Value Profile="(Default)">admin</Value>
+    </Setting>
+    <Setting Name="webPass" Type="System.String" Scope="User">
+      <Value Profile="(Default)">wpass</Value>
     </Setting>
   </Settings>
 </SettingsFile>

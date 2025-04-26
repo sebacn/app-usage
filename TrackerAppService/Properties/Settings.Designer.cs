@@ -25,7 +25,7 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("https://url3434.com")]
+        [global::System.Configuration.DefaultSettingValueAttribute("123")]
         public string influxUrl {
             get {
                 return ((string)(this["influxUrl"]));
@@ -37,7 +37,7 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("ttokenn")]
+        [global::System.Configuration.DefaultSettingValueAttribute("123")]
         public string influxToken {
             get {
                 return ((string)(this["influxToken"]));
@@ -49,7 +49,7 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("iforgg")]
+        [global::System.Configuration.DefaultSettingValueAttribute("123")]
         public string influxOrg {
             get {
                 return ((string)(this["influxOrg"]));
@@ -61,7 +61,7 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("bucket")]
+        [global::System.Configuration.DefaultSettingValueAttribute("123")]
         public string influxBucket {
             get {
                 return ((string)(this["influxBucket"]));
@@ -73,24 +73,7 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute(@"<?xml version=""1.0"" encoding=""utf-16""?>
-<ArrayOfString xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"">
-  <string>notepad,11:30:00,11:30:00,00:20:00,00:20:00,11:30:00,11:30:00,11:30:00</string>
-  <string>chrome,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00</string>
-  <string>word,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00,11:30:00</string>
-</ArrayOfString>")]
-        public global::System.Collections.Specialized.StringCollection appUsageLimits {
-            get {
-                return ((global::System.Collections.Specialized.StringCollection)(this["appUsageLimits"]));
-            }
-            set {
-                this["appUsageLimits"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("cert.pfx")]
+        [global::System.Configuration.DefaultSettingValueAttribute("123")]
         public string influxCertKeyFileName {
             get {
                 return ((string)(this["influxCertKeyFileName"]));
@@ -102,13 +85,61 @@ namespace TrackerAppService.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("cert_pass")]
+        [global::System.Configuration.DefaultSettingValueAttribute("123")]
         public string influxCertKeyPass {
             get {
                 return ((string)(this["influxCertKeyPass"]));
             }
             set {
                 this["influxCertKeyPass"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool webEnabled {
+            get {
+                return ((bool)(this["webEnabled"]));
+            }
+            set {
+                this["webEnabled"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("8080")]
+        public int webPort {
+            get {
+                return ((int)(this["webPort"]));
+            }
+            set {
+                this["webPort"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("admin")]
+        public string webUser {
+            get {
+                return ((string)(this["webUser"]));
+            }
+            set {
+                this["webUser"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("wpass")]
+        public string webPass {
+            get {
+                return ((string)(this["webPass"]));
+            }
+            set {
+                this["webPass"] = value;
             }
         }
     }
