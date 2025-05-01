@@ -595,7 +595,9 @@ namespace TrackerAppService
 
         private void KillApplication(string appTitle, int pid)
         {
-            foreach (var process in Process.GetProcessesByName(appTitle).Where(p => p.Id == pid))
+            var process = Process.GetProcessById(pid); // GetProcessesByName(appTitle)) // .Where(p => p.Id == pid))
+            
+            if (process != null)
             {
                 process.Kill();
 
@@ -603,7 +605,10 @@ namespace TrackerAppService
                 string title = $"{appTitle.ToUpper()} Usage Limit Expired";
 
                 new ProcessServices().StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + $" app-notify \"{title}\" \"{message}\"");
-
+            }
+            else
+            {
+                EventLog.WriteEntry("TrackerAppService", $"Failed to stop process name: {appTitle}, id: {pid}", EventLogEntryType.Error);
             }
         }
 
