@@ -297,10 +297,16 @@ namespace TrackerAppService
 
                 double usagePct = appUsage.Value.TotalMinutes/tsLimit.TotalMinutes *100;
 
-                trows += $"<tr><td>{appUsage.Key}</td><td style='z-index: 1;'><div class='bg' style='width: {usagePct:0.##}%;'></div>{usagePct:0.##}</td><td>{appUsage.Value}</td>" +
-                    $"<td>{appLimit.UsageLimitsPerDay[dtnow.DayOfWeek]:hh\\:mm}</td>" +
-                    $"<td>{appLimit.ActiveFromTime:hh\\:mm}</td>" +
-                    $"<td>{appLimit.ActiveToTime:hh\\:mm}</td>" +
+                TimeSpan timeNow = dtnow - dtnow.Date;
+                double fromPct = appLimit.ActiveFromTime > timeNow ? 100 : 0;
+                double toPct   = appLimit.ActiveToTime <= timeNow ? 100 : 0;
+
+                trows += $"<tr><td>{appUsage.Key}</td>" +
+                    $"<td style='z-index: 1;'><div class='bg' style='width: {usagePct:0.##}%;'></div>{usagePct:0.##}</td>" +
+                    $"<td>{appUsage.Value}</td>" +
+                    $"<td>{appLimit.UsageLimitsPerDay[dtnow.DayOfWeek]:hh\\:mm} / {tsWindow:hh\\:mm}</td>" +
+                    $"<td style='z-index: 1;'><div class='bg' style='background-color: #ff9900; width: {fromPct:0.##}%;'></div> {appLimit.ActiveFromTime:hh\\:mm}</td>" +
+                    $"<td style='z-index: 1;'><div class='bg' style='background-color: #ff9900; width: {toPct:0.##}%;'></div> {appLimit.ActiveToTime:hh\\:mm}</td>" +
                     $"<td {tdstyle}>{_appService.appUsageLimitsDict.ContainsKey(appUsage.Key)}</td></tr>";
             }
 
@@ -349,7 +355,7 @@ namespace TrackerAppService
             </style>
             </head>
             <body>
-                <h2>Tracker app (Host: {Environment.MachineName}, Ver: {Assembly.GetEntryAssembly().GetName().Version})   {DateTime.Now}</h2>
+                <h2>Tracker app (Host: {Environment.MachineName}, Ver: {Assembly.GetEntryAssembly().GetName().Version})   {DateTime.Now}  {DateTime.Now.DayOfWeek}</h2>
                 <ul>
                   <li><a href=""/"">Home</a></li>
                   <li><a href=""/settings"">Settings</a></li>
@@ -360,7 +366,7 @@ namespace TrackerAppService
                     <th>Application</th>
                     <th>Usage %</th>
                     <th>Usage time</th>
-                    <th>Limit ({dtnow.DayOfWeek})</th>
+                    <th>Limit (day/from-to)</th>
                     <th>Active from time</th>
                     <th>Active to time</th>
                     <th>App config</th>

@@ -555,8 +555,22 @@ namespace TrackerAppService
                 TimeSpan appLimit = appCfg.UsageLimitsPerDay[dtnow.DayOfWeek]; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
 
                 TimeSpan remainingTime = appLimit - appUsagePerDay[appTitle];
-                
-                if (appCfg.ActiveFromTime > (dtnow - dtnow.Date) || appCfg.ActiveToTime < (dtnow - dtnow.Date))
+
+                if (remainingTime <= TimeSpan.FromMinutes(5) && !warnedApps.Contains(appTitle))
+                {
+                    ShowWarningDialog(appTitle, remainingTime);
+                    warnedApps.Add(appTitle);
+                }
+
+                TimeSpan timeNow = dtnow - dtnow.Date;
+
+                if (appCfg.ActiveToTime - TimeSpan.FromMinutes(5) <= timeNow && !warnedApps.Contains(appTitle))
+                {
+                    ShowWarningDialog(appTitle, remainingTime);
+                    warnedApps.Add(appTitle);
+                }
+
+                if (appCfg.ActiveToTime <= timeNow || appCfg.ActiveFromTime > timeNow)
                 {
                     remainingTime = TimeSpan.Zero;
                 }
@@ -564,11 +578,6 @@ namespace TrackerAppService
                 if (remainingTime <= TimeSpan.Zero)
                 {
                     KillApplication(appTitle, pid);
-                }
-                else if (remainingTime <= TimeSpan.FromMinutes(5) && !warnedApps.Contains(appTitle))
-                {
-                    ShowWarningDialog(appTitle, remainingTime);
-                    warnedApps.Add(appTitle);
                 }
             }
         }
