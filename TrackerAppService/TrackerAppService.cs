@@ -27,6 +27,7 @@ using Newtonsoft.Json.Linq;
 using System.Net.Sockets;
 using System.Net;
 using System.Xml.Linq;
+using System.Globalization;
 //using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
@@ -91,6 +92,12 @@ namespace TrackerAppService
         public TrackerAppService()
         {
             EventLog.WriteEntry("TrackerAppService", "Service class initialized", EventLogEntryType.Information);
+
+            var cclone = Thread.CurrentThread.CurrentCulture.Clone() as CultureInfo;
+            cclone.DateTimeFormat = CultureInfo.GetCultureInfo("en-GB").DateTimeFormat;
+            cclone.NumberFormat.NumberDecimalSeparator = ".";
+
+            Thread.CurrentThread.CurrentCulture = cclone;
 
             InitializeComponent();
         }

@@ -65,6 +65,12 @@ namespace TrackerAppService
         {
             EventLog.WriteEntry("TrackerAppService", $"Run WebServer Async", EventLogEntryType.Information);
 
+            var cclone = Thread.CurrentThread.CurrentCulture.Clone() as CultureInfo;
+            cclone.DateTimeFormat = CultureInfo.GetCultureInfo("en-GB").DateTimeFormat;
+            cclone.NumberFormat.NumberDecimalSeparator = ".";
+
+            Thread.CurrentThread.CurrentCulture = cclone;
+
             HttpListener listener = new HttpListener();
             listener.Prefixes.Add($"http://{GetLocalIPAddress()}:{Properties.Settings.Default.webPort}/");
             listener.AuthenticationSchemes = AuthenticationSchemes.Basic;
@@ -83,8 +89,7 @@ namespace TrackerAppService
 
                 if (!ValidateUser(context))
                 {
-                    context.Response.StatusCode = 401;
-                    context.Response.Close();
+                    Serve404Page(context);
                     continue;
                 }
 
@@ -100,8 +105,7 @@ namespace TrackerAppService
                     }
                     else
                     {
-                        context.Response.StatusCode = 404;
-                        context.Response.Close();
+                        Serve404Page(context);
                         continue;
                     }
                 }
@@ -117,8 +121,7 @@ namespace TrackerAppService
                     }
                     else
                     {
-                        context.Response.StatusCode = 404;
-                        context.Response.Close();
+                        Serve404Page(context);
                         continue;
                     }
                 }
@@ -214,7 +217,8 @@ namespace TrackerAppService
             </style>
             </head>
             <body>
-                <h2>Tracker app {DateTime.Now} ver: {Assembly.GetEntryAssembly().GetName().Version}</h2>
+                <h2>Tracker app (Host: {Environment.MachineName}, Ver: {Assembly.GetEntryAssembly().GetName().Version})   {DateTime.Now}  {DateTime.Now.DayOfWeek}</h2>
+                <h3>Settings</h3>
                 <ul>
                   <li><a href='/'>Home</a></li>
                   <li><a href='/settings'>Settings</a></li>
@@ -356,6 +360,7 @@ namespace TrackerAppService
             </head>
             <body>
                 <h2>Tracker app (Host: {Environment.MachineName}, Ver: {Assembly.GetEntryAssembly().GetName().Version})   {DateTime.Now}  {DateTime.Now.DayOfWeek}</h2>
+                <h3>Home</h3>
                 <ul>
                   <li><a href=""/"">Home</a></li>
                   <li><a href=""/settings"">Settings</a></li>
@@ -382,7 +387,24 @@ namespace TrackerAppService
             context.Response.Close();
         }
 
-        static void HandleSettingsUpdate(HttpListenerContext context, TrackerAppService _appService)
+        static async void Serve404Page(HttpListenerContext context)
+        {
+            string html = $@"<html>
+                <head><title>404 Not Found</title></head>
+                <body>
+                <center><h1>404 Not Found</h1></center>
+                <hr><center>nginx</center>
+                </body></html>";
+
+            context.Response.StatusCode = 404;
+            byte[] buffer = Encoding.UTF8.GetBytes(html);
+            context.Response.ContentType = "text/html";
+            context.Response.ContentLength64 = buffer.Length;
+            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length); //Write(buffer, 0, buffer.Length);
+            context.Response.Close();
+        }
+
+            static void HandleSettingsUpdate(HttpListenerContext context, TrackerAppService _appService)
         {
             using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
             {
