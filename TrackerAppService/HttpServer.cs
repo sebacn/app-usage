@@ -93,7 +93,7 @@ namespace TrackerAppService
             var rapp = new RemoteApp
             {
                 Host = Environment.MachineName,
-                Url = $"http://{GetLocalIPAddress()}/8080",
+                Url = $"http://{GetLocalIPAddress()}:8080",
                 Ver = Assembly.GetEntryAssembly().GetName().Version.ToString(),
                 UpdateDT = DateTime.Now
             };
@@ -561,7 +561,7 @@ namespace TrackerAppService
 
                 if (ts.TotalMinutes < 10)
                 {
-                    trows += $"<tr><td><a href='{app.Key}'>{app.Key}</a></td>" +
+                    trows += $"<tr><td><a href='{app.Key}' target='_blank' rel='noopener noreferrer'>{app.Key}</a></td>" +
                        $"<td>{app.Value.Host}</td>" +
                        $"<td>{app.Value.Ver}</td>" +
                        $"<td>{app.Value.UpdateDT.ToLocalTime()}</td></tr>";
@@ -623,7 +623,7 @@ namespace TrackerAppService
                 <p><b>Remote apps list currently active:</b>List of applications.</p>
                 <table>
                   <tr>
-                    <th>Url</th>
+                    <th>Url (new tab)</th>
                     <th>Host</th>
                     <th>Version</th>
                     <th>Last update</th>
