@@ -2,11 +2,13 @@
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Principal;
@@ -15,6 +17,8 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Timers;
+using System.Web.UI.WebControls;
 using System.Windows.Forms;
 using TrackerAppService.Properties;
 using Windows.Services.Maps;
@@ -33,6 +37,14 @@ namespace TrackerAppService
         public int RefreshInterval { get; set; }
     }
 
+    public class RemoteApp
+    {
+        public String Host { get; set; }
+        public String Url { get; set; }
+        public String Ver { get; set; }
+        public DateTime UpdateDT { get; set; }
+    }
+
 
     class HttpServer
     {
@@ -40,26 +52,94 @@ namespace TrackerAppService
         static string validUsername = Properties.Settings.Default.webUser;
         static string validPassword = Properties.Settings.Default.webPass;
 
+        static public Dictionary<string, RemoteApp> remoteAppDict = new Dictionary<string, RemoteApp>();
+        //static public System.Collections.ArrayList notifyRAppList = new System.Collections.ArrayList();
 
-        public static HttpListener listener;
-       /// <summary>
-       /// public static string url = "http://localhost:8321/";
-       /// </summary>
-       // public static int pageViews = 0;
-        public static int requestCount = 0;
-        public static string pageData =
-            "<!DOCTYPE>" +
-            "<html>" +
-            "  <head>" +
-            "    <title>HttpListener Example</title>" +
-            "  </head>" +
-            "  <body>" +
-            "    <p>Page Views: {0}</p>" +
-            "    <form method=\"post\" action=\"shutdown\">" +
-            "      <input type=\"submit\" value=\"Shutdown\" {1}>" +
-            "    </form>" +
-            "  </body>" +
-            "</html>";
+        static private HashSet<string> notifyRAppList = new HashSet<string>();
+
+        static string appNotifyRAppListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppNotifyRAppList.json");
+        static private System.Timers.Timer timer1min;
+
+        public static HttpListener listener = null;
+        /// <summary>
+        /// public static string url = "http://localhost:8321/";
+        /// </summary>
+        // public static int pageViews = 0;
+        /*
+         public static int requestCount = 0;
+         public static string pageData =
+             "<!DOCTYPE>" +
+             "<html>" +
+             "  <head>" +
+             "    <title>HttpListener Example</title>" +
+             "  </head>" +
+             "  <body>" +
+             "    <p>Page Views: {0}</p>" +
+             "    <form method=\"post\" action=\"shutdown\">" +
+             "      <input type=\"submit\" value=\"Shutdown\" {1}>" +
+             "    </form>" +
+             "  </body>" +
+             "</html>";
+         */
+
+        private static void Timer1minElapsed(object sender, ElapsedEventArgs e)
+        {
+
+            if (notifyRAppList.Count == 0)
+            {
+                return;
+            }
+
+            var rapp = new RemoteApp
+            {
+                Host = Environment.MachineName,
+                Url = $"http://{GetLocalIPAddress()}/8080",
+                Ver = Assembly.GetEntryAssembly().GetName().Version.ToString(),
+                UpdateDT = DateTime.Now
+            };
+
+            string jsonData = JsonSerializer.Serialize(rapp, new JsonSerializerOptions { WriteIndented = true });
+            var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
+
+            foreach (var item in notifyRAppList)
+            {
+                new Thread(async () =>
+                {
+                    var httpClient = new HttpClient
+                    {
+                        Timeout = TimeSpan.FromSeconds(3)
+                    };
+
+                    var url = $"{item}/handle_notify_from_rapp";
+
+                    try
+                    {
+                        HttpResponseMessage response = await httpClient.PostAsync(url, content);
+                        response.EnsureSuccessStatusCode();
+
+                        //string result = await response.Content.ReadAsStringAsync();
+                        //Console.WriteLine("Response: " + result);
+                    }
+                    catch (TaskCanceledException ex)
+                    {
+                    }
+                    catch (Exception ex)
+                    {
+                        EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+                    }
+                }).Start();
+            }
+        }
+
+        static AuthenticationSchemes SelectAuthenticationScheme(HttpListenerRequest request)
+        {
+            if (request.Url.AbsolutePath.Equals("/handle_notify_from_rapp", StringComparison.OrdinalIgnoreCase))
+            {
+                return AuthenticationSchemes.Anonymous;
+            }
+
+            return AuthenticationSchemes.Basic; // Or NTLM, IntegratedWindowsAuthentication, etc.
+        }
 
         public static async Task RunWebServerAsync(CancellationToken ct, TrackerAppService _appService)
         {
@@ -69,10 +149,27 @@ namespace TrackerAppService
             cclone.DateTimeFormat = CultureInfo.GetCultureInfo("en-GB").DateTimeFormat;
             cclone.NumberFormat.NumberDecimalSeparator = ".";
 
+            timer1min = new System.Timers.Timer(60000); // Logs every 1 min
+            timer1min.Elapsed += Timer1minElapsed;
+            timer1min.Start();
+
+            if (System.IO.File.Exists(appNotifyRAppListFilePath))
+            {
+                string json = System.IO.File.ReadAllText(appNotifyRAppListFilePath);
+                notifyRAppList = JsonSerializer.Deserialize<HashSet<string>> (json) ?? new HashSet<string>();
+            }
+            else
+            {
+                string json = JsonSerializer.Serialize(notifyRAppList, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(appNotifyRAppListFilePath, json);
+            }
+
             Thread.CurrentThread.CurrentCulture = cclone;
 
             HttpListener listener = new HttpListener();
-            listener.Prefixes.Add($"http://{GetLocalIPAddress()}:{Properties.Settings.Default.webPort}/");
+            listener.AuthenticationSchemeSelectorDelegate = SelectAuthenticationScheme;
+
+            listener.Prefixes.Add($"http://*:{Properties.Settings.Default.webPort}/");
             listener.AuthenticationSchemes = AuthenticationSchemes.Basic;
             //listener.Realm = realm;
             //listener.AuthenticationSchemeSelectorDelegate = context => AuthenticationSchemes.Digest;
@@ -86,6 +183,12 @@ namespace TrackerAppService
             while (!ct.IsCancellationRequested)
             {
                 HttpListenerContext context = await listener.GetContextAsync();  //listener.GetContext();
+
+                if (context.Request.HttpMethod == "POST" && context.Request.Url.AbsolutePath == "/handle_notify_from_rapp")
+                {
+                    HandleRemoteAppUpdate(context, _appService);
+                    continue;
+                }
 
                 if (!ValidateUser(context))
                 {
@@ -101,7 +204,11 @@ namespace TrackerAppService
                     }
                     else if (context.Request.Url.AbsolutePath == "/")
                     {
-                        ServeInfoPage(context, _appService);
+                        ServeHomePage(context, _appService);
+                    }
+                    else if (context.Request.Url.AbsolutePath == "/remoteapps")
+                    {
+                        ServeRemoteApps(context);
                     }
                     else
                     {
@@ -118,6 +225,14 @@ namespace TrackerAppService
                     else if (context.Request.Url.AbsolutePath == "/app_update")
                     {
                         HandleSettingsUpdate(context, _appService);
+                    }
+                    else if (context.Request.Url.AbsolutePath == "/add_notify_rapp")
+                    {
+                        HandleRemoteAppAdd(context);
+                    }
+                    else if (context.Request.Url.AbsolutePath == "/del_notify_rapp")
+                    {
+                        HandleRemoteAppDel(context);
                     }
                     else
                     {
@@ -166,6 +281,15 @@ namespace TrackerAppService
                     $"</tr>";
 
                 idx++;
+            }
+
+            string notifyAppRows = "";
+
+            foreach (var item in notifyRAppList)
+            {
+                notifyAppRows += $"<tr>" +
+                    $"<td>{item}</td>" +
+                    $"<td><button type='submit' name='NotifyAppDeleteBtn' value='{item}' >Delete</button></td></tr>";
             }
 
             string html = $@"
@@ -222,8 +346,9 @@ namespace TrackerAppService
                 <ul>
                   <li><a href='/'>Home</a></li>
                   <li><a href='/settings'>Settings</a></li>
+                  <li><a href='/remoteapps'>Remote apps</a></li>
                 </ul><p><p>
-                <p><b>App usage status ({DateTime.Now:dd.MM.yyyy}):</b> List of applications with information for used time for current day.</p>
+                <p/><p><b>App usage status ({DateTime.Now:dd.MM.yyyy}):</b> List of applications with information for used time for current day.</p>
                 <form method='POST' id='my_form' action='/app_update'>
                 <table>
                   <thead>
@@ -249,6 +374,26 @@ namespace TrackerAppService
                 <input name='AppUsagNameNew' placeholder='application name' />
                 <input type='submit' value='Add application'>
               </form>
+
+              <br><p><b>Remote apps to notify:</b> List of remote applications to report current app alive status.</p>
+              <form method='POST' id='my_form' action='/del_notify_rapp'>
+                <table>
+                  <thead>
+                    <tr>
+                    <th>Notify remote app url</th>
+                    <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>{notifyAppRows}</tbody>
+                </table>
+                </form>
+
+              <b>Notify remote apps add:</b> Add remote app url to notify.</p>
+              <form action='/add_notify_rapp' method='post'>
+                <input name='NotifyAppUrl' placeholder='remote application url' />
+                <input type='submit' value='Add remote app'>
+              </form>
+
             </body>
             </html>";
 
@@ -265,7 +410,7 @@ namespace TrackerAppService
             context.Response.Close();
         }
 
-        static async void ServeInfoPage(HttpListenerContext context, TrackerAppService _appService)
+        static async void ServeHomePage(HttpListenerContext context, TrackerAppService _appService)
         {
             /*
             var appUsageLimitsDict = new Dictionary<string, AppLimitConfig>();
@@ -364,6 +509,7 @@ namespace TrackerAppService
                 <ul>
                   <li><a href=""/"">Home</a></li>
                   <li><a href=""/settings"">Settings</a></li>
+                  <li><a href='/remoteapps'>Remote apps</a></li>
                 </ul><p><p>
                 <p><b>App usage status ({_appService.lastResetDate:dd.MM.yyyy}):</b> List of applications with information for used time for current day.</p>
                 <table>
@@ -404,7 +550,96 @@ namespace TrackerAppService
             context.Response.Close();
         }
 
-            static void HandleSettingsUpdate(HttpListenerContext context, TrackerAppService _appService)
+        static async void ServeRemoteApps(HttpListenerContext context)
+        {
+            var dtnow = DateTime.UtcNow;
+            string trows = "";
+
+            foreach (var app in remoteAppDict)
+            {
+                TimeSpan ts = dtnow - app.Value.UpdateDT;
+
+                if (ts.TotalMinutes < 10)
+                {
+                    trows += $"<tr><td><a href='{app.Key}'>{app.Key}</a></td>" +
+                       $"<td>{app.Value.Host}</td>" +
+                       $"<td>{app.Value.Ver}</td>" +
+                       $"<td>{app.Value.UpdateDT.ToLocalTime()}</td></tr>";
+                }
+            }
+
+            string html = $@"
+            <html>
+            <head>
+            <style>
+            td .bg {{position: absolute;
+                left: 0;
+                top: 0;
+                bottom: 0;
+                background-color: #8ef;
+                z-index: -1;
+            }}
+
+            ul {{
+              list-style-type: none;
+              margin: 0;
+              padding: 0;
+              overflow: hidden;
+            }}
+
+            li {{
+              float: left;
+            }}
+
+            li a {{
+              display: block;
+              padding: 8px;
+              background-color: #dddddd;
+            }}
+
+            p.double {{border - style: double;}}
+
+            table {{font - family: arial, sans-serif;
+              border-collapse: collapse;
+              width: 90%;  }}
+
+            td, th {{border: 1px solid #dddddd;
+              text-align: left;
+              padding: 8px;
+              position: relative; }}
+
+            tr:nth-child(even) {{background-color: #f8f8f8;}}
+
+            </style>
+            </head>
+            <body>
+                <h2>Tracker app (Host: {Environment.MachineName}, Ver: {Assembly.GetEntryAssembly().GetName().Version})   {DateTime.Now}  {DateTime.Now.DayOfWeek}</h2>
+                <h3>Remote apps</h3>
+                <ul>
+                  <li><a href=""/"">Home</a></li>
+                  <li><a href=""/settings"">Settings</a></li>
+                  <li><a href='/remoteapps'>Remote apps</a></li>
+                </ul><p><p>
+                <p><b>Remote apps list currently active:</b>List of applications.</p>
+                <table>
+                  <tr>
+                    <th>Url</th>
+                    <th>Host</th>
+                    <th>Version</th>
+                    <th>Last update</th>
+                  </tr>{trows}
+                </table>
+            </body>
+            </html>";
+
+            byte[] buffer = Encoding.UTF8.GetBytes(html);
+            context.Response.ContentType = "text/html";
+            context.Response.ContentLength64 = buffer.Length;
+            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length); //Write(buffer, 0, buffer.Length);
+            context.Response.Close();
+        }
+
+        static void HandleSettingsUpdate(HttpListenerContext context, TrackerAppService _appService)
         {
             using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
             {
@@ -493,6 +728,84 @@ namespace TrackerAppService
 
                     _appService.SaveAppUsageLimitsToFile();
                 } 
+            }
+
+            context.Response.Redirect("/settings");
+            context.Response.Close();
+        }
+
+        static void HandleRemoteAppUpdate(HttpListenerContext context, TrackerAppService _appService)
+        {
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            {
+                var body = reader.ReadToEnd();
+                RemoteApp remapp = null;
+
+                if (body != null && body != "")
+                {
+                    try
+                    {
+                        remapp = JsonSerializer.Deserialize<RemoteApp>(body) ?? new RemoteApp();
+                    }
+                    catch { }
+                    
+                }
+
+                if (remapp != null && remapp.Url != "" && remapp.Url != null)
+                {
+                    if (remoteAppDict.ContainsKey(remapp.Url))
+                    {
+                        remoteAppDict[remapp.Url].UpdateDT = DateTime.UtcNow;
+                    }
+                    else
+                    {
+                        remoteAppDict.Add(remapp.Url, remapp);
+                    }
+                }
+            }
+
+            context.Response.Redirect("/settings");
+            context.Response.Close();
+        }
+
+        static void HandleRemoteAppAdd(HttpListenerContext context)
+        {
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            {
+                var body = reader.ReadToEnd();
+                var parsed = System.Web.HttpUtility.ParseQueryString(body);
+
+                string remoteAppUrl = parsed["NotifyAppUrl"];
+
+                if (remoteAppUrl != "" && remoteAppUrl != null  && !notifyRAppList.Contains(remoteAppUrl))
+                {
+                    notifyRAppList.Add(remoteAppUrl);
+
+                    string json = JsonSerializer.Serialize(notifyRAppList, new JsonSerializerOptions { WriteIndented = true });
+                    System.IO.File.WriteAllText(appNotifyRAppListFilePath, json);
+                }
+            }
+
+            context.Response.Redirect("/settings");
+            context.Response.Close();
+        }
+
+        static void HandleRemoteAppDel(HttpListenerContext context)
+        {
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            {
+                var body = reader.ReadToEnd();
+                var parsed = System.Web.HttpUtility.ParseQueryString(body);
+
+                string remoteAppUrl = parsed["NotifyAppDeleteBtn"];
+
+                if (remoteAppUrl != "" && remoteAppUrl != null && notifyRAppList.Contains(remoteAppUrl))
+                {
+                    notifyRAppList.Remove(remoteAppUrl);
+
+                    string json = JsonSerializer.Serialize(notifyRAppList, new JsonSerializerOptions { WriteIndented = true });
+                    System.IO.File.WriteAllText(appNotifyRAppListFilePath, json);
+                }
             }
 
             context.Response.Redirect("/settings");
