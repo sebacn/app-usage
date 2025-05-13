@@ -27,6 +27,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Timers;
+using System.Web.Routing;
 using System.Web.UI.WebControls;
 using System.Windows.Forms;
 using TrackerAppService.Properties;
@@ -53,8 +54,10 @@ namespace TrackerAppService
         private byte[] CertPassCRT { get; set; } = new byte[10];
         [JsonInclude]
         private byte[] EntrCRT { get; set; } = new byte[20];
-        public int Port { get; set; } = 8443;
+        public int Port { get; set; } = 8080;
+        public int PortHTTPS { get; set; } = 8443;
         public HashSet<string> NotifyRemoteAppList { get; set; } = new HashSet<string>();
+        public bool ForceHTTPS { get; set; } = false;
 
         public SettingsHTTP()
         {  
@@ -141,7 +144,8 @@ namespace TrackerAppService
         static private System.Timers.Timer timer1min;
 
         static private WebserverBase server = null;
-        public static HttpListener listener = null;
+        static private WebserverBase serverRedirect = null;
+        //public static HttpListener listener = null;
 
         static private TrackerAppService appService;
 
@@ -155,10 +159,19 @@ namespace TrackerAppService
                 return;
             }
 
+            string hosturl = $"http://{GetLocalIPAddress()}:{settingsHTTP.Port}";
+
+            if (server != null && server.Settings.Ssl.Enable)
+            {
+                string cn = server.Settings.Ssl.SslCertificate.Subject;
+                string host = GetLocalIPAddress().Replace(".", "-") + "." + cn.Remove(0, 3);
+                hosturl = $"https://{host}:{settingsHTTP.PortHTTPS}";
+            }
+
             var rapp = new RemoteApp
             {
                 Host = Environment.MachineName,
-                Url = $"http://{GetLocalIPAddress()}:8080",
+                Url = hosturl,
                 Ver = Assembly.GetEntryAssembly().GetName().Version.ToString(),
                 UpdateDT = DateTime.Now
             };
@@ -256,6 +269,8 @@ namespace TrackerAppService
             {
                 try
                 {
+                    EventLog.WriteEntry("TrackerAppService", $"Certificate {settingsHTTP.CertName}, cert pass {settingsHTTP.CertPass}", EventLogEntryType.Warning); //debug
+
                     cert2 = new X509Certificate2(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, settingsHTTP.CertName), settingsHTTP.CertPass);
 
                     if (DateTime.UtcNow > cert2.NotAfter)
@@ -267,8 +282,11 @@ namespace TrackerAppService
                 catch { }
             }
 
-            WebserverSettings webSettings = new WebserverSettings("*", settingsHTTP.Port);
+            string host = GetLocalIPAddress();
+
+            WebserverSettings webSettings = new WebserverSettings(host, cert2 != null? settingsHTTP.PortHTTPS : settingsHTTP.Port);
             webSettings.Ssl = new WebserverSettings.SslSettings { SslCertificate = cert2 };
+            webSettings.Ssl.Enable = cert2 != null;
 
             server = new WatsonWebserver.Lite.WebserverLite(webSettings, P404Route);
             server.Routes.AuthenticateRequest = AuthenticateRequest;
@@ -287,93 +305,24 @@ namespace TrackerAppService
             //no auth
             server.Routes.PreAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/handle_notify_from_rapp", ReceiveNotifyFromRemoteAppRoute);
 
-
             server.Start(ct);
+
+            if (webSettings.Ssl.Enable) //redirect http to https
+            {
+                serverRedirect = new WatsonWebserver.Lite.WebserverLite(
+                    new WebserverSettings {
+                        Hostname = host,
+                        Port = settingsHTTP.Port
+                        }, RedirectToHTTPSRoute);
+
+                serverRedirect.Start();
+            }
 
             while (!ct.IsCancellationRequested)
             {
                 Thread.Sleep(1000);
             }
 
-
-            /*
-
-            HttpListener listener = new HttpListener();
-            listener.AuthenticationSchemeSelectorDelegate = SelectAuthenticationScheme;
-
-            listener.Prefixes.Add($"http://*:{Properties.Settings.Default.webPort}/");
-            listener.AuthenticationSchemes = AuthenticationSchemes.Basic;
-            //listener.Realm = realm;
-            //listener.AuthenticationSchemeSelectorDelegate = context => AuthenticationSchemes.Digest;
-
-            listener.Start();
-
-            EventLog.WriteEntry("TrackerAppService", $"HTTP address: {listener.Prefixes.First()}", EventLogEntryType.Information);
-
-            //Console.WriteLine("Server started at http://localhost:8080/");
-
-            while (!ct.IsCancellationRequested)
-            {
-                HttpListenerContext context = await listener.GetContextAsync();  //listener.GetContext();
-
-                if (context.Request.HttpMethod == "POST" && context.Request.Url.AbsolutePath == "/handle_notify_from_rapp")
-                {
-                    HandleRemoteAppUpdate(context, _appService);
-                    continue;
-                }
-
-                if (!ValidateUser(context))
-                {
-                    Serve401Page(context);
-                    continue;
-                }
-
-                if (context.Request.HttpMethod == "GET")
-                {
-                    if (context.Request.Url.AbsolutePath == "/settings")
-                    {
-                        ServeSettingsPage(context, _appService);
-                    }
-                    else if (context.Request.Url.AbsolutePath == "/")
-                    {
-                        ServeHomePage(context, _appService);
-                    }
-                    else if (context.Request.Url.AbsolutePath == "/remoteapps")
-                    {
-                        ServeRemoteApps(context);
-                    }
-                    else
-                    {
-                        Serve404Page(context);
-                        continue;
-                    }
-                }
-                else if (context.Request.HttpMethod == "POST")
-                {
-                    if (context.Request.Url.AbsolutePath == "/add_newapp")
-                    {
-                        HandleSettingsNewApp(context, _appService);
-                    }
-                    else if (context.Request.Url.AbsolutePath == "/app_update")
-                    {
-                        HandleSettingsUpdate(context, _appService);
-                    }
-                    else if (context.Request.Url.AbsolutePath == "/add_notify_rapp")
-                    {
-                        HandleRemoteAppAdd(context);
-                    }
-                    else if (context.Request.Url.AbsolutePath == "/del_notify_rapp")
-                    {
-                        HandleRemoteAppDel(context);
-                    }
-                    else
-                    {
-                        Serve404Page(context);
-                        continue;
-                    }
-                }
-            }
-            */
         }
 
       
@@ -866,9 +815,7 @@ namespace TrackerAppService
                 }
             }
 
-            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
-            ctx.Response.Headers.Add("Location", "/settings");
-            ctx.Response.ContentType = "text/html";
+            ctx.Response.StatusCode = (int)HttpStatusCode.OK;
             await ctx.Response.Send();
         }
 
@@ -914,6 +861,18 @@ namespace TrackerAppService
 
             ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
             ctx.Response.Headers.Add("Location", "/settings");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
+        }
+
+        public static async Task RedirectToHTTPSRoute(HttpContextBase ctx)
+        {
+            string cn = server.Settings.Ssl.SslCertificate.Subject;
+            string host = ctx.Request.Destination.Hostname.Replace(".", "-") + "." + cn.Remove(0, 3);
+            string url = $"https://{host}:{settingsHTTP.PortHTTPS}{ctx.Request.Url.RawWithoutQuery}";
+
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", url);
             ctx.Response.ContentType = "text/html";
             await ctx.Response.Send();
         }
