@@ -1,6 +1,8 @@
 ﻿using InfluxDB.Client.Api.Domain;
+//using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -10,10 +12,17 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
+using System.Reactive;
 using System.Reflection;
+using System.Runtime.ConstrainedExecution;
+using System.Runtime.Remoting.Contexts;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Security.Policy;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -21,20 +30,95 @@ using System.Timers;
 using System.Web.UI.WebControls;
 using System.Windows.Forms;
 using TrackerAppService.Properties;
+using WatsonWebserver.Core;
 using Windows.Services.Maps;
 using Windows.UI;
 using Windows.UI.ApplicationSettings;
+using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.StartPanel;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.TrayNotify;
 
 namespace TrackerAppService
 {
 
-    public class Settings2
+    public class SettingsHTTP
     {
-        public string Username { get; set; }
-        public string Theme { get; set; }
-        public int RefreshInterval { get; set; }
+        public bool Enabled { get; set; } = false;
+        public string WebUserName { get; set; } = "";
+        [JsonInclude]
+        private byte[] WebPassCRT { get; set; } = new byte[10];
+        public string CertName { get; set; } = "";
+        [JsonInclude]
+        private byte[] CertPassCRT { get; set; } = new byte[10];
+        [JsonInclude]
+        private byte[] EntrCRT { get; set; } = new byte[20];
+        public int Port { get; set; } = 8443;
+        public HashSet<string> NotifyRemoteAppList { get; set; } = new HashSet<string>();
+
+        public SettingsHTTP()
+        {  
+
+            // Generate additional entropy (will be used as the Initialization vector)
+            using (RNGCryptoServiceProvider rng = new RNGCryptoServiceProvider())
+            {
+                rng.GetBytes(EntrCRT);
+            }
+        }
+
+        [JsonIgnore]
+        public string WebPass {
+            get {
+                string ret = "";
+
+                try
+                {
+                    byte[] plaintext = ProtectedData.Unprotect(WebPassCRT, EntrCRT, DataProtectionScope.LocalMachine);
+
+                    ret = Encoding.UTF8.GetString(plaintext);
+                }
+                catch { }
+
+                return ret;
+            }
+            set
+            {
+                try
+                {
+                    WebPassCRT = ProtectedData.Protect(Encoding.UTF8.GetBytes(value), EntrCRT, DataProtectionScope.LocalMachine);
+                }
+                catch { }
+
+            }
+        }
+
+        [JsonIgnore]
+        public string CertPass {
+            get
+            {
+                string ret = "";
+
+                try
+                {
+                    byte[] plaintext = ProtectedData.Unprotect(CertPassCRT, EntrCRT, DataProtectionScope.LocalMachine);
+
+                    ret = Encoding.UTF8.GetString(plaintext);
+                }
+                catch { }
+
+                return ret;
+            }
+            set
+            {
+                try
+                {
+                    CertPassCRT = ProtectedData.Protect(Encoding.UTF8.GetBytes(value), EntrCRT, DataProtectionScope.LocalMachine);
+                }
+                catch { }
+
+            }
+        } 
+
     }
 
     public class RemoteApp
@@ -48,44 +132,25 @@ namespace TrackerAppService
 
     class HttpServer
     {
-        //static string settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "WebSettings.json");
-        static string validUsername = Properties.Settings.Default.webUser;
-        static string validPassword = Properties.Settings.Default.webPass;
 
         static public Dictionary<string, RemoteApp> remoteAppDict = new Dictionary<string, RemoteApp>();
-        //static public System.Collections.ArrayList notifyRAppList = new System.Collections.ArrayList();
 
-        static private HashSet<string> notifyRAppList = new HashSet<string>();
+        private static string appSettingsHTTPFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppSettingsHTTP.json");
+        private static SettingsHTTP settingsHTTP = null;
 
-        static string appNotifyRAppListFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppNotifyRAppList.json");
         static private System.Timers.Timer timer1min;
 
+        static private WebserverBase server = null;
         public static HttpListener listener = null;
-        /// <summary>
-        /// public static string url = "http://localhost:8321/";
-        /// </summary>
-        // public static int pageViews = 0;
-        /*
-         public static int requestCount = 0;
-         public static string pageData =
-             "<!DOCTYPE>" +
-             "<html>" +
-             "  <head>" +
-             "    <title>HttpListener Example</title>" +
-             "  </head>" +
-             "  <body>" +
-             "    <p>Page Views: {0}</p>" +
-             "    <form method=\"post\" action=\"shutdown\">" +
-             "      <input type=\"submit\" value=\"Shutdown\" {1}>" +
-             "    </form>" +
-             "  </body>" +
-             "</html>";
-         */
+
+        static private TrackerAppService appService;
+
 
         private static void Timer1minElapsed(object sender, ElapsedEventArgs e)
         {
 
-            if (notifyRAppList.Count == 0)
+            if (settingsHTTP == null 
+            || (settingsHTTP != null && settingsHTTP.NotifyRemoteAppList.Count == 0))
             {
                 return;
             }
@@ -101,7 +166,7 @@ namespace TrackerAppService
             string jsonData = JsonSerializer.Serialize(rapp, new JsonSerializerOptions { WriteIndented = true });
             var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
 
-            foreach (var item in notifyRAppList)
+            foreach (var item in settingsHTTP.NotifyRemoteAppList)
             {
                 new Thread(async () =>
                 {
@@ -131,40 +196,107 @@ namespace TrackerAppService
             }
         }
 
-        static AuthenticationSchemes SelectAuthenticationScheme(HttpListenerRequest request)
+        private static async Task AuthenticateRequest(HttpContextBase ctx)
         {
-            if (request.Url.AbsolutePath.Equals("/handle_notify_from_rapp", StringComparison.OrdinalIgnoreCase))
-            {
-                return AuthenticationSchemes.Anonymous;
-            }
+            const string Realm = "MyRealm";
 
-            return AuthenticationSchemes.Basic; // Or NTLM, IntegratedWindowsAuthentication, etc.
+            if (ctx.Request.Headers["Authorization"] == null || !IsAuthorized(ctx))
+            {                
+                string html = $@"<!DOCTYPE html><html>
+                <head><title>401 Denied</title></head><body>
+                <center><h1>404 access denied</h1></center>
+                <hr><center>nginx</center>
+                </body></html>";
+
+                // Send 401 Unauthorized response with Digest Auth header
+                var nonce = Guid.NewGuid().ToString("N");
+                ctx.Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+                ctx.Response.Headers["WWW-Authenticate"] = $"Digest realm=\"{Realm}\", nonce=\"{nonce}\", algorithm=\"MD5\", qop=\"auth,auth-int\"";
+                ctx.Response.ContentType = "text/html";
+                await ctx.Response.Send(html);
+            }
         }
 
         public static async Task RunWebServerAsync(CancellationToken ct, TrackerAppService _appService)
         {
             EventLog.WriteEntry("TrackerAppService", $"Run WebServer Async", EventLogEntryType.Information);
 
+            appService = _appService;
+
             var cclone = Thread.CurrentThread.CurrentCulture.Clone() as CultureInfo;
             cclone.DateTimeFormat = CultureInfo.GetCultureInfo("en-GB").DateTimeFormat;
             cclone.NumberFormat.NumberDecimalSeparator = ".";
+            Thread.CurrentThread.CurrentCulture = cclone;
+
+            settingsHTTP = new SettingsHTTP();      
+
+            if (System.IO.File.Exists(appSettingsHTTPFilePath))
+            {
+                string json = System.IO.File.ReadAllText(appSettingsHTTPFilePath);
+                settingsHTTP = JsonSerializer.Deserialize<SettingsHTTP> (json) ?? new SettingsHTTP();
+            }
+            else
+            {
+                string json = JsonSerializer.Serialize(settingsHTTP, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(appSettingsHTTPFilePath, json);
+            }
+
+            if (!settingsHTTP.Enabled)
+            {
+                return;
+            }
 
             timer1min = new System.Timers.Timer(60000); // Logs every 1 min
             timer1min.Elapsed += Timer1minElapsed;
             timer1min.Start();
 
-            if (System.IO.File.Exists(appNotifyRAppListFilePath))
+            X509Certificate2 cert2 = null;
+
+            if (settingsHTTP.CertName != "")
             {
-                string json = System.IO.File.ReadAllText(appNotifyRAppListFilePath);
-                notifyRAppList = JsonSerializer.Deserialize<HashSet<string>> (json) ?? new HashSet<string>();
-            }
-            else
-            {
-                string json = JsonSerializer.Serialize(notifyRAppList, new JsonSerializerOptions { WriteIndented = true });
-                System.IO.File.WriteAllText(appNotifyRAppListFilePath, json);
+                try
+                {
+                    cert2 = new X509Certificate2(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, settingsHTTP.CertName), settingsHTTP.CertPass);
+
+                    if (DateTime.UtcNow > cert2.NotAfter)
+                    {
+                        EventLog.WriteEntry("TrackerAppService", $"Certificate {settingsHTTP.CertName} expired and cannot be used (Expiration UTC: {cert2.NotAfter})", EventLogEntryType.Warning);
+                        cert2 = null;
+                    }
+                }
+                catch { }
             }
 
-            Thread.CurrentThread.CurrentCulture = cclone;
+            WebserverSettings webSettings = new WebserverSettings("*", settingsHTTP.Port);
+            webSettings.Ssl = new WebserverSettings.SslSettings { SslCertificate = cert2 };
+
+            server = new WatsonWebserver.Lite.WebserverLite(webSettings, P404Route);
+            server.Routes.AuthenticateRequest = AuthenticateRequest;
+
+            //GET
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.GET, "/", HomeRoute);
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.GET, "/settings", SettingsRoute);
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.GET, "/remoteapps", RemoteApsRoute);
+            
+            //POST
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/add_newapp", NewAppRoute);
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/app_update", SettingsUpdateRoute);
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/add_notify_rapp", RemoteAppAddRoute);
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/del_notify_rapp", RemoteAppDelRoute);
+
+            //no auth
+            server.Routes.PreAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/handle_notify_from_rapp", ReceiveNotifyFromRemoteAppRoute);
+
+
+            server.Start(ct);
+
+            while (!ct.IsCancellationRequested)
+            {
+                Thread.Sleep(1000);
+            }
+
+
+            /*
 
             HttpListener listener = new HttpListener();
             listener.AuthenticationSchemeSelectorDelegate = SelectAuthenticationScheme;
@@ -192,7 +324,7 @@ namespace TrackerAppService
 
                 if (!ValidateUser(context))
                 {
-                    Serve404Page(context);
+                    Serve401Page(context);
                     continue;
                 }
 
@@ -241,26 +373,19 @@ namespace TrackerAppService
                     }
                 }
             }
+            */
         }
 
-        static bool ValidateUser(HttpListenerContext context)
+      
+        public static async Task SettingsRoute(HttpContextBase ctx)
         {
-            IPrincipal user = context.User;
-            if (user?.Identity is HttpListenerBasicIdentity identity)
-            {
-                return identity.Name == validUsername && identity.Password == validPassword;
-            }
-            return false;
-        }
-
-        static async void ServeSettingsPage(HttpListenerContext context, TrackerAppService _appService)
-        {
+            
             var appUsageLimitsDict = new Dictionary<string, AppLimitConfig>();
 
             string trows = "";
             int idx = 0;
 
-            foreach (var appLim in _appService.appUsageLimitsDict)
+            foreach (var appLim in appService.appUsageLimitsDict)
             {
                 DateTime dtnow = DateTime.Now;
 
@@ -285,7 +410,7 @@ namespace TrackerAppService
 
             string notifyAppRows = "";
 
-            foreach (var item in notifyRAppList)
+            foreach (var item in settingsHTTP.NotifyRemoteAppList)
             {
                 notifyAppRows += $"<tr>" +
                     $"<td>{item}</td>" +
@@ -397,33 +522,16 @@ namespace TrackerAppService
             </body>
             </html>";
 
-            /*
-            < form action = '/update_applimit' method = 'post' >
-            < button type = 'submit' > Submit </ button >
-                </ form >
-            */
+            ctx.Response.StatusCode = (int)HttpStatusCode.OK;
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send(html);
 
-            byte[] buffer = Encoding.UTF8.GetBytes(html);
-            context.Response.ContentType = "text/html";
-            context.Response.ContentLength64 = buffer.Length;
-            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length); //Write(buffer, 0, buffer.Length);
-            context.Response.Close();
         }
 
-        static async void ServeHomePage(HttpListenerContext context, TrackerAppService _appService)
+        public static async Task HomeRoute(HttpContextBase ctx)
         {
-            /*
-            var appUsageLimitsDict = new Dictionary<string, AppLimitConfig>();
-
-            string appUsageLimitsFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsageLimits.json");
-
-            if (System.IO.File.Exists(appUsageLimitsFilePath))
-            {
-                string json = System.IO.File.ReadAllText(appUsageLimitsFilePath);
-                appUsageLimitsDict = JsonSerializer.Deserialize<Dictionary<string, AppLimitConfig>>(json) ?? new Dictionary<string, AppLimitConfig>();
-            }
-            */
-            var newDictionary = _appService.appUsagePerDay.ToDictionary(entry => entry.Key, entry => entry.Value);
+            
+            var newDictionary = appService.appUsagePerDay.ToDictionary(entry => entry.Key, entry => entry.Value);
 
             DateTime dtnow = DateTime.Now;
             string trows = "";
@@ -433,9 +541,9 @@ namespace TrackerAppService
                 AppLimitConfig appLimit = new AppLimitConfig();
                 appLimit.initDefault(appUsage.Key);
 
-                if (_appService.appUsageLimitsDict.ContainsKey(appUsage.Key))
+                if (appService.appUsageLimitsDict.ContainsKey(appUsage.Key))
                 {
-                    appLimit = _appService.appUsageLimitsDict[appUsage.Key];
+                    appLimit = appService.appUsageLimitsDict[appUsage.Key];
                     tdstyle = "style='background-color: lightgreen;'";
                 }
 
@@ -456,7 +564,7 @@ namespace TrackerAppService
                     $"<td>{appLimit.UsageLimitsPerDay[dtnow.DayOfWeek]:hh\\:mm} / {tsWindow:hh\\:mm}</td>" +
                     $"<td style='z-index: 1;'><div class='bg' style='background-color: #ff9900; width: {fromPct:0.##}%;'></div> {appLimit.ActiveFromTime:hh\\:mm}</td>" +
                     $"<td style='z-index: 1;'><div class='bg' style='background-color: #ff9900; width: {toPct:0.##}%;'></div> {appLimit.ActiveToTime:hh\\:mm}</td>" +
-                    $"<td {tdstyle}>{_appService.appUsageLimitsDict.ContainsKey(appUsage.Key)}</td></tr>";
+                    $"<td {tdstyle}>{appService.appUsageLimitsDict.ContainsKey(appUsage.Key)}</td></tr>";
             }
 
             string html = $@"
@@ -511,7 +619,7 @@ namespace TrackerAppService
                   <li><a href=""/settings"">Settings</a></li>
                   <li><a href='/remoteapps'>Remote apps</a></li>
                 </ul><p><p>
-                <p><b>App usage status ({_appService.lastResetDate:dd.MM.yyyy}):</b> List of applications with information for used time for current day.</p>
+                <p><b>App usage status ({appService.lastResetDate:dd.MM.yyyy}):</b> List of applications with information for used time for current day.</p>
                 <table>
                   <tr>
                     <th>Application</th>
@@ -526,14 +634,12 @@ namespace TrackerAppService
             </body>
             </html>";
 
-            byte[] buffer = Encoding.UTF8.GetBytes(html);
-            context.Response.ContentType = "text/html";
-            context.Response.ContentLength64 = buffer.Length;
-            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length); //Write(buffer, 0, buffer.Length);
-            context.Response.Close();
+            ctx.Response.StatusCode = (int)HttpStatusCode.OK;
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send(html);
         }
 
-        static async void Serve404Page(HttpListenerContext context)
+        public static async Task P404Route(HttpContextBase ctx)
         {
             string html = $@"<html>
                 <head><title>404 Not Found</title></head>
@@ -542,15 +648,13 @@ namespace TrackerAppService
                 <hr><center>nginx</center>
                 </body></html>";
 
-            context.Response.StatusCode = 404;
-            byte[] buffer = Encoding.UTF8.GetBytes(html);
-            context.Response.ContentType = "text/html";
-            context.Response.ContentLength64 = buffer.Length;
-            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length); //Write(buffer, 0, buffer.Length);
-            context.Response.Close();
+            ctx.Response.StatusCode = (int)HttpStatusCode.NotFound;
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send(html);
         }
 
-        static async void ServeRemoteApps(HttpListenerContext context)
+
+        public static async Task RemoteApsRoute(HttpContextBase ctx)
         {
             var dtnow = DateTime.UtcNow;
             string trows = "";
@@ -632,184 +736,186 @@ namespace TrackerAppService
             </body>
             </html>";
 
-            byte[] buffer = Encoding.UTF8.GetBytes(html);
-            context.Response.ContentType = "text/html";
-            context.Response.ContentLength64 = buffer.Length;
-            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length); //Write(buffer, 0, buffer.Length);
-            context.Response.Close();
+            ctx.Response.StatusCode = (int)HttpStatusCode.OK;
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send(html);
         }
 
-        static void HandleSettingsUpdate(HttpListenerContext context, TrackerAppService _appService)
+        public static async Task SettingsUpdateRoute(HttpContextBase ctx)
         {
-            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            
+            var body = ctx.Request.DataAsString;
+            var parsed = System.Web.HttpUtility.ParseQueryString(body);
+
+            string deleteIdx = parsed["DeleteBtn"];
+            string updateIdx = parsed["UpdateBtn"];
+
+            if (deleteIdx != "" && deleteIdx != null)
             {
-                var body = reader.ReadToEnd();
-                var parsed = System.Web.HttpUtility.ParseQueryString(body);
+                int idx = -1;
 
-                string deleteIdx = parsed["DeleteBtn"];
-                string updateIdx = parsed["UpdateBtn"];
-
-                if (deleteIdx != "" && deleteIdx != null)
+                if (Int32.TryParse(deleteIdx, out idx))
                 {
-                    int idx = -1;
+                    string appName = parsed[$"AppName_{idx}"];
 
-                    if (Int32.TryParse(deleteIdx, out idx))
+                    if (appName != "" && appService.appUsageLimitsDict.ContainsKey(appName))
                     {
-                        string appName = parsed[$"AppName_{idx}"];
-
-                        if (appName != "" && _appService.appUsageLimitsDict.ContainsKey(appName))
-                        {
-                            _appService.appUsageLimitsDict.Remove(appName);
-                            _appService.SaveAppUsageLimitsToFile();
-                        }
-                    } 
-                }
-                else if (updateIdx != "" && updateIdx != null)
-                {
-                    int idx = -1;
-
-                    if (Int32.TryParse(updateIdx, out idx))
-                    {
-                        string appName = parsed[$"AppName_{idx}"];
-
-                        if (appName != "" && _appService.appUsageLimitsDict.ContainsKey(appName))
-                        {
-                            AppLimitConfig origAppCfg = _appService.appUsageLimitsDict[appName];
-                            AppLimitConfig newAppCfg = new AppLimitConfig(); 
-
-                            var culture = new CultureInfo("en-US");
-
-                            try
-                            {
-                                newAppCfg.AppName = origAppCfg.AppName;
-                                newAppCfg.ActiveFromTime = TimeSpan.Parse(parsed[$"TimeEntries[{idx}].FromTime"], culture);
-                                newAppCfg.ActiveToTime = TimeSpan.Parse(parsed[$"TimeEntries[{idx}].ToTime"], culture);
-                                newAppCfg.UsageLimitsPerDay = new Dictionary<DayOfWeek, TimeSpan>();
-
-                                foreach (var entry in origAppCfg.UsageLimitsPerDay)
-                                {
-                                    newAppCfg.UsageLimitsPerDay.Add(entry.Key, TimeSpan.Parse(parsed[$"TimeEntries[{idx}].Limit{entry.Key}"], culture));
-                                }
-
-                                _appService.appUsageLimitsDict[appName] = newAppCfg;
-
-                                _appService.SaveAppUsageLimitsToFile();
-                            }
-                            catch (Exception ex)
-                            {
-                                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
-                            }   
-                        }
+                        appService.appUsageLimitsDict.Remove(appName);
+                        appService.SaveAppUsageLimitsToFile();
                     }
-                }
-
-            }
-
-            context.Response.Redirect("/settings");
-            context.Response.Close();
-        }
-
-        static void HandleSettingsNewApp(HttpListenerContext context, TrackerAppService _appService)
-        {
-            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
-            {
-                var body = reader.ReadToEnd();
-                var parsed = System.Web.HttpUtility.ParseQueryString(body);
-
-                string newApp = parsed["AppUsagNameNew"];
-
-                if (newApp != "" && !_appService.appUsageLimitsDict.ContainsKey(newApp))
-                {
-                    var appLimitCfg = new AppLimitConfig();
-
-                    appLimitCfg.initDefault(newApp);
-
-                    _appService.appUsageLimitsDict.Add(newApp, appLimitCfg);
-
-                    _appService.SaveAppUsageLimitsToFile();
                 } 
             }
+            else if (updateIdx != "" && updateIdx != null)
+            {
+                int idx = -1;
 
-            context.Response.Redirect("/settings");
-            context.Response.Close();
+                if (Int32.TryParse(updateIdx, out idx))
+                {
+                    string appName = parsed[$"AppName_{idx}"];
+
+                    if (appName != "" && appService.appUsageLimitsDict.ContainsKey(appName))
+                    {
+                        AppLimitConfig origAppCfg = appService.appUsageLimitsDict[appName];
+                        AppLimitConfig newAppCfg = new AppLimitConfig(); 
+
+                        var culture = new CultureInfo("en-US");
+
+                        try
+                        {
+                            newAppCfg.AppName = origAppCfg.AppName;
+                            newAppCfg.ActiveFromTime = TimeSpan.Parse(parsed[$"TimeEntries[{idx}].FromTime"], culture);
+                            newAppCfg.ActiveToTime = TimeSpan.Parse(parsed[$"TimeEntries[{idx}].ToTime"], culture);
+                            newAppCfg.UsageLimitsPerDay = new Dictionary<DayOfWeek, TimeSpan>();
+
+                            foreach (var entry in origAppCfg.UsageLimitsPerDay)
+                            {
+                                newAppCfg.UsageLimitsPerDay.Add(entry.Key, TimeSpan.Parse(parsed[$"TimeEntries[{idx}].Limit{entry.Key}"], culture));
+                            }
+
+                            appService.appUsageLimitsDict[appName] = newAppCfg;
+
+                            appService.SaveAppUsageLimitsToFile();
+                        }
+                        catch (Exception ex)
+                        {
+                            EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
+                        }   
+                    }
+                }
+            }
+
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/settings");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
         }
 
-        static void HandleRemoteAppUpdate(HttpListenerContext context, TrackerAppService _appService)
+        
+        public static async Task NewAppRoute(HttpContextBase ctx)
         {
-            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
-            {
-                var body = reader.ReadToEnd();
-                RemoteApp remapp = null;
+            
+            var body = ctx.Request.DataAsString; 
+            var parsed = System.Web.HttpUtility.ParseQueryString(body);
 
-                if (body != null && body != "")
+            string newApp = parsed["AppUsagNameNew"];
+
+            if (newApp != "" && !appService.appUsageLimitsDict.ContainsKey(newApp))
+            {
+                var appLimitCfg = new AppLimitConfig();
+
+                appLimitCfg.initDefault(newApp);
+
+                appService.appUsageLimitsDict.Add(newApp, appLimitCfg);
+
+                appService.SaveAppUsageLimitsToFile();
+            }             
+
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/settings");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
+        }
+
+        
+
+        public static async Task ReceiveNotifyFromRemoteAppRoute(HttpContextBase ctx)
+        {
+            
+            var body = ctx.Request.DataAsString;
+            RemoteApp remapp = null;
+
+            if (body != null && body != "")
+            {
+                try
                 {
-                    try
-                    {
-                        remapp = JsonSerializer.Deserialize<RemoteApp>(body) ?? new RemoteApp();
-                    }
-                    catch { }
+                    remapp = JsonSerializer.Deserialize<RemoteApp>(body) ?? new RemoteApp();
+                }
+                catch { }
                     
-                }
+            }
 
-                if (remapp != null && remapp.Url != "" && remapp.Url != null)
+            if (remapp != null && remapp.Url != "" && remapp.Url != null)
+            {
+                if (remoteAppDict.ContainsKey(remapp.Url))
                 {
-                    if (remoteAppDict.ContainsKey(remapp.Url))
-                    {
-                        remoteAppDict[remapp.Url].UpdateDT = DateTime.UtcNow;
-                    }
-                    else
-                    {
-                        remoteAppDict.Add(remapp.Url, remapp);
-                    }
+                    remoteAppDict[remapp.Url].UpdateDT = DateTime.UtcNow;
+                }
+                else
+                {
+                    remoteAppDict.Add(remapp.Url, remapp);
                 }
             }
 
-            context.Response.Redirect("/settings");
-            context.Response.Close();
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/settings");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
         }
 
-        static void HandleRemoteAppAdd(HttpListenerContext context)
+        
+
+        public static async Task RemoteAppAddRoute(HttpContextBase ctx)
         {
-            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            
+            var body = ctx.Request.DataAsString;
+            var parsed = System.Web.HttpUtility.ParseQueryString(body);
+
+            string remoteAppUrl = parsed["NotifyAppUrl"];
+
+            if (remoteAppUrl != "" && remoteAppUrl != null  && !settingsHTTP.NotifyRemoteAppList.Contains(remoteAppUrl))
             {
-                var body = reader.ReadToEnd();
-                var parsed = System.Web.HttpUtility.ParseQueryString(body);
+                settingsHTTP.NotifyRemoteAppList.Add(remoteAppUrl);
 
-                string remoteAppUrl = parsed["NotifyAppUrl"];
-
-                if (remoteAppUrl != "" && remoteAppUrl != null  && !notifyRAppList.Contains(remoteAppUrl))
-                {
-                    notifyRAppList.Add(remoteAppUrl);
-
-                    string json = JsonSerializer.Serialize(notifyRAppList, new JsonSerializerOptions { WriteIndented = true });
-                    System.IO.File.WriteAllText(appNotifyRAppListFilePath, json);
-                }
+                string json = JsonSerializer.Serialize(settingsHTTP, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(appSettingsHTTPFilePath, json);
             }
 
-            context.Response.Redirect("/settings");
-            context.Response.Close();
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/settings");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
         }
 
-        static void HandleRemoteAppDel(HttpListenerContext context)
+        public static async Task RemoteAppDelRoute(HttpContextBase ctx)
         {
-            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            
+            var body = ctx.Request.DataAsString;
+            var parsed = System.Web.HttpUtility.ParseQueryString(body);
+
+            string remoteAppUrl = parsed["NotifyAppDeleteBtn"];
+
+            if (remoteAppUrl != "" && remoteAppUrl != null && settingsHTTP.NotifyRemoteAppList.Contains(remoteAppUrl))
             {
-                var body = reader.ReadToEnd();
-                var parsed = System.Web.HttpUtility.ParseQueryString(body);
+                settingsHTTP.NotifyRemoteAppList.Remove(remoteAppUrl);
 
-                string remoteAppUrl = parsed["NotifyAppDeleteBtn"];
-
-                if (remoteAppUrl != "" && remoteAppUrl != null && notifyRAppList.Contains(remoteAppUrl))
-                {
-                    notifyRAppList.Remove(remoteAppUrl);
-
-                    string json = JsonSerializer.Serialize(notifyRAppList, new JsonSerializerOptions { WriteIndented = true });
-                    System.IO.File.WriteAllText(appNotifyRAppListFilePath, json);
-                }
+                string json = JsonSerializer.Serialize(settingsHTTP, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(appSettingsHTTPFilePath, json);
             }
 
-            context.Response.Redirect("/settings");
-            context.Response.Close();
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/settings");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
         }
 
         /*
@@ -841,6 +947,66 @@ namespace TrackerAppService
                 }
             }
             return "";
+        }
+
+        private static bool IsAuthorized(HttpContextBase ctx) //WatsonWebserver.ServerContext ctx)
+        {
+            const string Realm = "MyRealm";
+
+            var authHeader = ctx.Request.Headers["Authorization"];
+
+            if (authHeader == null)
+            {
+                return false;
+            }
+
+            if (!authHeader.StartsWith("Digest "))
+                return false;
+
+            var authParams = ParseAuthHeader(authHeader.Substring(7));
+            if (!authParams.ContainsKey("username") 
+            || !authParams.ContainsKey("nonce") 
+            || !authParams.ContainsKey("response"))
+                return false;
+
+            // Compute HA1 and HA2 for Digest Authentication validation
+            var ha1 = ComputeMD5Hash($"{settingsHTTP.WebUserName}:{Realm}:{settingsHTTP.WebPass}");
+            var ha2 = ComputeMD5Hash($"{ctx.Request.Method}:{ctx.Request.Url.RawWithoutQuery}"); //AbsolutePath
+            var validResponse = ComputeMD5Hash($"{ha1}:{authParams["nonce"]}:{authParams["nc"]}:{authParams["cnonce"]}:{authParams["qop"]}:{ha2}");
+
+            // Check if the response matches
+            return string.Equals(authParams["response"], validResponse, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Function to parse the Digest Authorization header
+        private static Dictionary<string, string> ParseAuthHeader(string header)
+        {
+            var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var parts = header.Split(',');
+
+            foreach (var part in parts)
+            {
+                var kv = part.Split(new[] { '=' }, 2);
+                if (kv.Length == 2)
+                {
+                    var key = kv[0].Trim();
+                    var val = kv[1].Trim().Trim('"');
+                    dict[key] = val;
+                }
+            }
+
+            return dict;
+        }
+
+        // Function to compute MD5 hash
+        private static string ComputeMD5Hash(string input)
+        {
+            using (var md5 = MD5.Create())
+            {
+                var inputBytes = Encoding.UTF8.GetBytes(input);
+                var hashBytes = md5.ComputeHash(inputBytes);
+                return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+            }
         }
 
     }
