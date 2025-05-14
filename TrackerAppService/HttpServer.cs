@@ -32,11 +32,13 @@ using System.Web.UI.WebControls;
 using System.Windows.Forms;
 using TrackerAppService.Properties;
 using WatsonWebserver.Core;
+using Windows.Security.Cryptography.Certificates;
 using Windows.Services.Maps;
 using Windows.UI;
 using Windows.UI.ApplicationSettings;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
+using static System.Net.WebRequestMethods;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.StartPanel;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.TrayNotify;
 
@@ -57,7 +59,6 @@ namespace TrackerAppService
         public int Port { get; set; } = 8080;
         public int PortHTTPS { get; set; } = 8443;
         public HashSet<string> NotifyRemoteAppList { get; set; } = new HashSet<string>();
-        public bool ForceHTTPS { get; set; } = false;
 
         public SettingsHTTP()
         {  
@@ -250,6 +251,9 @@ namespace TrackerAppService
             }
             else
             {
+                settingsHTTP.WebUserName = "tmpuser";
+                settingsHTTP.WebPass = "tmppass";
+                settingsHTTP.Enabled = true;
                 string json = JsonSerializer.Serialize(settingsHTTP, new JsonSerializerOptions { WriteIndented = true });
                 System.IO.File.WriteAllText(appSettingsHTTPFilePath, json);
             }
@@ -269,7 +273,7 @@ namespace TrackerAppService
             {
                 try
                 {
-                    EventLog.WriteEntry("TrackerAppService", $"Certificate {settingsHTTP.CertName}, cert pass {settingsHTTP.CertPass}", EventLogEntryType.Warning); //debug
+                    //EventLog.WriteEntry("TrackerAppService", $"Certificate {settingsHTTP.CertName}, cert pass {settingsHTTP.CertPass}", EventLogEntryType.Warning); //debug
 
                     cert2 = new X509Certificate2(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, settingsHTTP.CertName), settingsHTTP.CertPass);
 
@@ -301,6 +305,7 @@ namespace TrackerAppService
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/app_update", SettingsUpdateRoute);
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/add_notify_rapp", RemoteAppAddRoute);
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/del_notify_rapp", RemoteAppDelRoute);
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/web_config_update", WebConfigUpdateRoute);            
 
             //no auth
             server.Routes.PreAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/handle_notify_from_rapp", ReceiveNotifyFromRemoteAppRoute);
@@ -451,7 +456,7 @@ namespace TrackerAppService
 
               <br><p><b>Remote apps to notify:</b> List of remote applications to report current app alive status.</p>
               <form method='POST' id='my_form' action='/del_notify_rapp'>
-                <table>
+                <table style='width: 500px;'>
                   <thead>
                     <tr>
                     <th>Notify remote app url</th>
@@ -467,6 +472,28 @@ namespace TrackerAppService
                 <input name='NotifyAppUrl' placeholder='remote application url' />
                 <input type='submit' value='Add remote app'>
               </form>
+
+              <br><p><b>HTTP server settings:</b> Web server configuration.</p>
+              <form method='POST' id='my_form' action='/web_config_update'>
+                <table style='width: 500px;'>
+                  <thead>
+                    <tr>
+                    <th>Parameter</th>
+                    <th>Value</th>
+                    </tr>
+                  </thead>
+                    <tbody>
+                    <tr><td>HTTP Enabled</td><td><input name='parmWebEnabled' value='{settingsHTTP.Enabled}' style='width: 150px;'/></td></tr>
+                    <tr><td>User name</td><td><input name='parmWebUserName' value='{settingsHTTP.WebUserName}' style='width: 150px;'/></td></tr>
+                    <tr><td>User password</td><td><input name='parmWebUserPassw' value='{settingsHTTP.WebPass}' style='width: 150px;'/></td></tr>
+                    <tr><td>HTTP Port</td><td><input name='parmWebPort' value='{settingsHTTP.Port}' style='width: 150px;'/></td></tr>
+                    <tr><td>HTTPS Port</td><td><input name='parmWebPortHTTPS' value='{settingsHTTP.PortHTTPS}' style='width: 150px;'/></td></tr>
+                    <tr><td>Certificate file name</td><td><input name='parmWebCertName' value='{settingsHTTP.CertName}' style='width: 150px;'/></td></tr>
+                    <tr><td>Certificate password</td><td><input name='parmWebCertPassw' value='{settingsHTTP.CertPass}' style='width: 150px;'/></td></tr>
+                    </tbody>
+                </table>
+                <input type='submit' value='Save settings'>
+                </form>
 
             </body>
             </html>";
@@ -759,7 +786,32 @@ namespace TrackerAppService
             await ctx.Response.Send();
         }
 
-        
+        public static async Task WebConfigUpdateRoute(HttpContextBase ctx)
+        {
+
+            var body = ctx.Request.DataAsString;
+            var parsed = System.Web.HttpUtility.ParseQueryString(body);
+
+            settingsHTTP.Enabled = bool.Parse(parsed["parmWebEnabled"]);
+            settingsHTTP.WebUserName = parsed["parmWebUserName"];
+            settingsHTTP.WebPass = parsed["parmWebUserPassw"];
+            settingsHTTP.Port = int.Parse(parsed["parmWebPort"]);
+            settingsHTTP.PortHTTPS = int.Parse(parsed["parmWebPortHTTPS"]);
+            settingsHTTP.CertName = parsed["parmWebCertName"];
+            settingsHTTP.CertPass = parsed["parmWebCertPassw"];
+
+            string json = JsonSerializer.Serialize(settingsHTTP, new JsonSerializerOptions { WriteIndented = true });
+            System.IO.File.WriteAllText(appSettingsHTTPFilePath, json);
+
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/settings");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
+
+        }
+
+
+
         public static async Task NewAppRoute(HttpContextBase ctx)
         {
             
