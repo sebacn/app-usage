@@ -30,6 +30,7 @@ using System.Timers;
 using System.Web.Routing;
 using System.Web.UI.WebControls;
 using System.Windows.Forms;
+using System.Xml.Linq;
 using TrackerAppService.Properties;
 using WatsonWebserver.Core;
 using Windows.Security.Cryptography.Certificates;
@@ -305,7 +306,8 @@ namespace TrackerAppService
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/app_update", SettingsUpdateRoute);
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/add_notify_rapp", RemoteAppAddRoute);
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/del_notify_rapp", RemoteAppDelRoute);
-            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/web_config_update", WebConfigUpdateRoute);            
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/web_config_update", WebConfigUpdateRoute);
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/influx_config_update", InfluxConfigUpdateRoute);            
 
             //no auth
             server.Routes.PreAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/handle_notify_from_rapp", ReceiveNotifyFromRemoteAppRoute);
@@ -490,6 +492,28 @@ namespace TrackerAppService
                     <tr><td>HTTPS Port</td><td><input name='parmWebPortHTTPS' value='{settingsHTTP.PortHTTPS}' style='width: 150px;'/></td></tr>
                     <tr><td>Certificate file name</td><td><input name='parmWebCertName' value='{settingsHTTP.CertName}' style='width: 150px;'/></td></tr>
                     <tr><td>Certificate password</td><td><input name='parmWebCertPassw' value='{settingsHTTP.CertPass}' style='width: 150px;'/></td></tr>
+                    </tbody>
+                </table>
+                <input type='submit' value='Save settings'>
+                </form>
+
+              <br><p><b>Influx DB settings:</b> Configure inflixDB parameters.</p>
+              <form method='POST' id='my_form' action='/influx_config_update'>
+                <table style='width: 500px;'>
+                  <thead>
+                    <tr>
+                    <th>Parameter</th>
+                    <th>Value</th>
+                    </tr>
+                  </thead>
+                    <tbody>
+                    <tr><td>Enabled</td><td><input name='parmInfluxEnabled' value='{appService.influxConfig.Enabled}' style='width: 150px;'/></td></tr>
+                    <tr><td>Url</td><td><input name='parmInfluxUrl' value='{appService.influxConfig.Url}' style='width: 150px;'/></td></tr>
+                    <tr><td>Org</td><td><input name='parmInfluxOrg' value='{appService.influxConfig.Org}' style='width: 150px;'/></td></tr>
+                    <tr><td>Bucket</td><td><input name='parmInfluxBucket' value='{appService.influxConfig.Bucket}' style='width: 150px;'/></td></tr>
+                    <tr><td>Token</td><td><input name='parmInfluxToken' value='{appService.influxConfig.Token}' style='width: 150px;'/></td></tr>
+                    <tr><td>mTLS Certificate file name</td><td><input name='parmInfluxCertName' value='{appService.influxConfig.CertName}' style='width: 150px;'/></td></tr>
+                    <tr><td>mTLS Certificate password</td><td><input name='parmInfluxCertPassw' value='{appService.influxConfig.CertPass}' style='width: 150px;'/></td></tr>
                     </tbody>
                 </table>
                 <input type='submit' value='Save settings'>
@@ -810,6 +834,29 @@ namespace TrackerAppService
 
         }
 
+        public static async Task InfluxConfigUpdateRoute(HttpContextBase ctx)
+        {
+          
+            var body = ctx.Request.DataAsString;
+            var parsed = System.Web.HttpUtility.ParseQueryString(body);
+
+            appService.influxConfig.Enabled = bool.Parse(parsed["parmInfluxEnabled"]);
+            appService.influxConfig.Url = parsed["parmInfluxUrl"];
+            appService.influxConfig.Org = parsed["parmInfluxOrg"];
+            appService.influxConfig.Bucket = parsed["parmInfluxBucket"];
+            appService.influxConfig.Token = parsed["parmInfluxToken"];
+            appService.influxConfig.CertName = parsed["parmInfluxCertName"];
+            appService.influxConfig.CertPass = parsed["parmInfluxCertPassw"];
+
+            string json = JsonSerializer.Serialize(appService.influxConfig, new JsonSerializerOptions { WriteIndented = true });
+            System.IO.File.WriteAllText(appService.influxConfigFilePath, json);
+
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/settings");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
+
+        }
 
 
         public static async Task NewAppRoute(HttpContextBase ctx)

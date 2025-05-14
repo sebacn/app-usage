@@ -28,10 +28,97 @@ using System.Net.Sockets;
 using System.Net;
 using System.Xml.Linq;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text.Json.Serialization;
+using System.Text;
 //using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
 {
+
+    public class SettingsInflux
+    {
+        public bool Enabled { get; set; } = false;
+        public string Url { get; set; } = "";
+        public string Org { get; set; } = "";
+        public string Bucket { get; set; } = "";
+        public string CertName { get; set; } = "";
+
+        [JsonInclude]
+        private byte[] TokenCRT { get; set; } = new byte[10];
+        [JsonInclude]
+        private byte[] CertPassCRT { get; set; } = new byte[10];
+        [JsonInclude]
+        private byte[] EntrCRT { get; set; } = new byte[20];
+        
+
+        public SettingsInflux()
+        {
+
+            // Generate additional entropy (will be used as the Initialization vector)
+            using (RNGCryptoServiceProvider rng = new RNGCryptoServiceProvider())
+            {
+                rng.GetBytes(EntrCRT);
+            }
+        }
+
+        [JsonIgnore]
+        public string Token
+        {
+            get
+            {
+                string ret = "";
+
+                try
+                {
+                    byte[] plaintext = ProtectedData.Unprotect(TokenCRT, EntrCRT, DataProtectionScope.LocalMachine);
+
+                    ret = Encoding.UTF8.GetString(plaintext);
+                }
+                catch { }
+
+                return ret;
+            }
+            set
+            {
+                try
+                {
+                    TokenCRT = ProtectedData.Protect(Encoding.UTF8.GetBytes(value), EntrCRT, DataProtectionScope.LocalMachine);
+                }
+                catch { }
+
+            }
+        }
+
+        [JsonIgnore]
+        public string CertPass
+        {
+            get
+            {
+                string ret = "";
+
+                try
+                {
+                    byte[] plaintext = ProtectedData.Unprotect(CertPassCRT, EntrCRT, DataProtectionScope.LocalMachine);
+
+                    ret = Encoding.UTF8.GetString(plaintext);
+                }
+                catch { }
+
+                return ret;
+            }
+            set
+            {
+                try
+                {
+                    CertPassCRT = ProtectedData.Protect(Encoding.UTF8.GetBytes(value), EntrCRT, DataProtectionScope.LocalMachine);
+                }
+                catch { }
+
+            }
+        }
+
+    }
 
     public class DataPoint
     {
@@ -84,10 +171,13 @@ namespace TrackerAppService
         string appUsageLimitsFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsageLimits.json");
         string lastResetDateFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppLastResetDate.json");
         string pointDataLogFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppPointDataLog.json");
+        public string influxConfigFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppInfluxConfig.json");
         bool IsSessionLocked = false;
 
         Dictionary<DateTime, List<DataPoint>> InfluxPointBuff = new Dictionary<DateTime, List<DataPoint>>();
         public Dictionary<string, AppLimitConfig> appUsageLimitsDict = new Dictionary<string, AppLimitConfig>();
+
+        public SettingsInflux influxConfig = null;
 
         public TrackerAppService()
         {
@@ -110,10 +200,11 @@ namespace TrackerAppService
 
         private bool InfluxDBConfigOk()
         {
-            return (!string.IsNullOrEmpty(Properties.Settings.Default.influxUrl)
-                && !string.IsNullOrEmpty(Properties.Settings.Default.influxToken)
-                && !string.IsNullOrEmpty(Properties.Settings.Default.influxOrg)
-                && !string.IsNullOrEmpty(Properties.Settings.Default.influxBucket));
+            return (influxConfig.Enabled
+                && !string.IsNullOrEmpty(influxConfig.Url)
+                && !string.IsNullOrEmpty(influxConfig.Token)
+                && !string.IsNullOrEmpty(influxConfig.Org)
+                && !string.IsNullOrEmpty(influxConfig.Bucket));
         }
 
         public void AddInfluxPointData(DateTime dt)
@@ -193,22 +284,22 @@ namespace TrackerAppService
 
                 X509Certificate2 x509Certificate2 = null;
 
-                if (!string.IsNullOrEmpty(Properties.Settings.Default.influxCertKeyFileName))
+                if (!string.IsNullOrEmpty(influxConfig.CertName))
                 {
-                    string influxCertKeyFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Properties.Settings.Default.influxCertKeyFileName);
+                    string influxCertKeyFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, influxConfig.CertName);
                     if (System.IO.File.Exists(influxCertKeyFilePath))
                     {
-                        string influxCertKeyPass = string.IsNullOrEmpty(Properties.Settings.Default.influxCertKeyPass) ? "" : Properties.Settings.Default.influxCertKeyPass;
+                        string influxCertKeyPass = string.IsNullOrEmpty(influxConfig.CertPass) ? "" : influxConfig.CertPass;
 
                         x509Certificate2 = new X509Certificate2(influxCertKeyFilePath, influxCertKeyPass, X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet); //"C:\\Temp\\cert.pfx"
                     }
                 }
 
-                var options = new InfluxDBClientOptions(Properties.Settings.Default.influxUrl)
+                var options = new InfluxDBClientOptions(influxConfig.Url)
                 {
-                    Token = Properties.Settings.Default.influxToken,
-                    Org = Properties.Settings.Default.influxOrg,
-                    Bucket = Properties.Settings.Default.influxBucket,
+                    Token = influxConfig.Token,
+                    Org = influxConfig.Org,
+                    Bucket = influxConfig.Bucket,
                     ClientCertificates = x509Certificate2 != null ? new X509CertificateCollection() { x509Certificate2 } : new X509CertificateCollection() { }
                 };
 
@@ -311,6 +402,8 @@ namespace TrackerAppService
             timer10sec.Elapsed += TimerElapsed10sec;
             timer10sec.Start();
 
+            //Thread.Sleep(30000); // debug
+
             if (InfluxDBConfigOk())
             {
                 timer1min = new System.Timers.Timer(60000); // Logs every 1 min
@@ -336,10 +429,7 @@ namespace TrackerAppService
 
             //Thread.Sleep(30000); // debug
 
-            if (Properties.Settings.Default.webEnabled)
-            {
-                Task.Run(() => HttpServer.RunWebServerAsync(pipeServerCTS.Token, this));
-            }
+            Task.Run(() => HttpServer.RunWebServerAsync(pipeServerCTS.Token, this));
             
         }
 
@@ -735,6 +825,18 @@ namespace TrackerAppService
 
                 string json = JsonSerializer.Serialize(appUsageLimitsDict, new JsonSerializerOptions { WriteIndented = true });
                 System.IO.File.WriteAllText(appUsageLimitsFilePath, json);
+            }
+
+            //influx config
+            if (System.IO.File.Exists(influxConfigFilePath))
+            {
+                string json = System.IO.File.ReadAllText(influxConfigFilePath);
+                influxConfig = JsonSerializer.Deserialize<SettingsInflux>(json) ?? new SettingsInflux();
+            }
+            else
+            {
+                string json = JsonSerializer.Serialize(influxConfig, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(influxConfigFilePath, json);
             }
 
         }
