@@ -215,7 +215,6 @@ namespace TrackerAppService
             };
 
             string jsonData = JsonSerializer.Serialize(rapp, new JsonSerializerOptions { WriteIndented = true });
-            var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
 
             foreach (var item in settingsHTTP.NotifyRemoteAppList)
             {
@@ -223,13 +222,14 @@ namespace TrackerAppService
                 {
                     var httpClient = new HttpClient
                     {
-                        Timeout = TimeSpan.FromSeconds(3)
+                        Timeout = TimeSpan.FromSeconds(10)
                     };
 
                     var url = $"{item}/handle_notify_from_rapp";
 
                     try
                     {
+                        var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
                         HttpResponseMessage response = await httpClient.PostAsync(url, content);
                         response.EnsureSuccessStatusCode();
 
@@ -929,6 +929,10 @@ namespace TrackerAppService
         {
             
             var body = ctx.Request.DataAsString;
+
+            ctx.Response.StatusCode = (int)HttpStatusCode.OK;
+            await ctx.Response.Send();
+
             RemoteApp remapp = null;
 
             if (body != null && body != "")
@@ -952,9 +956,6 @@ namespace TrackerAppService
                     remoteAppDict.Add(remapp.Url, remapp);
                 }
             }
-
-            ctx.Response.StatusCode = (int)HttpStatusCode.OK;
-            await ctx.Response.Send();
         }
 
         
