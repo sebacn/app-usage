@@ -42,9 +42,45 @@ using Windows.UI.Xaml.Controls;
 using static System.Net.WebRequestMethods;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.StartPanel;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.TrayNotify;
+using NetFwTypeLib;
 
 namespace TrackerAppService
 {
+    class FirewallHelper
+    {
+        public static void OpenPort(int port, string name, NET_FW_IP_PROTOCOL_ protocol = NET_FW_IP_PROTOCOL_.NET_FW_IP_PROTOCOL_TCP)
+        {
+            Type type = Type.GetTypeFromProgID("HNetCfg.FwPolicy2");
+            INetFwPolicy2 firewallPolicy = (INetFwPolicy2)Activator.CreateInstance(type);
+
+            // Check if rule already exists
+            foreach (INetFwRule rule in firewallPolicy.Rules)
+            {
+                if (rule.Name == name)
+                {
+                    return; // Rule already exists
+                }
+            }
+
+            INetFwRule newRule = (INetFwRule)Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule"));
+
+            newRule.ApplicationName = Process.GetCurrentProcess().MainModule.FileName;
+            newRule.Name = name;
+            newRule.Description = $"Allow inbound {protocol} traffic on port {port}";
+            newRule.Protocol = (int)protocol;
+            newRule.LocalPorts = port.ToString();
+            newRule.Direction = NET_FW_RULE_DIRECTION_.NET_FW_RULE_DIR_IN;
+            newRule.Enabled = true;
+            newRule.Grouping = "@firewallapi.dll,-23255";
+            newRule.Profiles = (int)NET_FW_PROFILE_TYPE2_.NET_FW_PROFILE2_ALL;
+            newRule.Action = NET_FW_ACTION_.NET_FW_ACTION_ALLOW;
+
+            firewallPolicy.Rules.Add(newRule);
+
+            EventLog.WriteEntry("TrackerAppService", $"Firewal rule {name} added to list", EventLogEntryType.Information);
+        }
+    }
+
 
     public class SettingsHTTP
     {
@@ -263,6 +299,9 @@ namespace TrackerAppService
             {
                 return;
             }
+
+            FirewallHelper.OpenPort(settingsHTTP.Port, $"TrackerAppService_IN{settingsHTTP.Port}", NET_FW_IP_PROTOCOL_.NET_FW_IP_PROTOCOL_TCP);
+            FirewallHelper.OpenPort(settingsHTTP.PortHTTPS, $"TrackerAppService_IN{settingsHTTP.PortHTTPS}", NET_FW_IP_PROTOCOL_.NET_FW_IP_PROTOCOL_TCP);
 
             timer1min = new System.Timers.Timer(60000); // Logs every 1 min
             timer1min.Elapsed += Timer1minElapsed;
