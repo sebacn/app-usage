@@ -170,6 +170,12 @@ namespace TrackerAppService
         public DateTime UpdateDT { get; set; }
     }
 
+    public class AuthRef
+    {
+        public String Realm { get; set; }
+        public bool LoggedIn { get; set; }
+    }
+
 
     class HttpServer
     {
@@ -186,6 +192,8 @@ namespace TrackerAppService
         //public static HttpListener listener = null;
 
         static private TrackerAppService appService;
+
+        static public Dictionary<string, AuthRef> realmList = new Dictionary<string, AuthRef>();
 
 
         private static void Timer1minElapsed(object sender, ElapsedEventArgs e)
@@ -249,10 +257,21 @@ namespace TrackerAppService
 
         private static async Task AuthenticateRequest(HttpContextBase ctx)
         {
-            const string Realm = "MyRealm";
+
+            if (!realmList.ContainsKey(ctx.Request.Source.IpAddress))
+            {
+                realmList.Add(ctx.Request.Source.IpAddress, new AuthRef { Realm = Guid.NewGuid().ToString("N") });
+            }
+
+            if (ctx.Request.Url.RawWithoutQuery == "/")
+            {
+                return;
+            }
 
             if (ctx.Request.Headers["Authorization"] == null || !IsAuthorized(ctx))
-            {                
+            {
+                realmList[ctx.Request.Source.IpAddress].LoggedIn = false;
+
                 string html = $@"<!DOCTYPE html><html>
                 <head><title>401 Denied</title></head><body>
                 <center><h1>404 access denied</h1></center>
@@ -262,9 +281,13 @@ namespace TrackerAppService
                 // Send 401 Unauthorized response with Digest Auth header
                 var nonce = Guid.NewGuid().ToString("N");
                 ctx.Response.StatusCode = (int)HttpStatusCode.Unauthorized;
-                ctx.Response.Headers["WWW-Authenticate"] = $"Digest realm=\"{Realm}\", nonce=\"{nonce}\", algorithm=\"MD5\", qop=\"auth,auth-int\"";
+                ctx.Response.Headers["WWW-Authenticate"] = $"Digest realm=\"{realmList[ctx.Request.Source.IpAddress].Realm}\", nonce=\"{nonce}\", algorithm=\"MD5\", qop=\"auth,auth-int\"";
                 ctx.Response.ContentType = "text/html";
                 await ctx.Response.Send(html);
+            }
+            else
+            {
+                realmList[ctx.Request.Source.IpAddress].LoggedIn = true;
             }
         }
 
@@ -326,7 +349,7 @@ namespace TrackerAppService
                 catch { }
             }
 
-            string host = GetLocalIPAddress();
+            string host = "*"; // GetLocalIPAddress();
 
             WebserverSettings webSettings = new WebserverSettings(host, cert2 != null? settingsHTTP.PortHTTPS : settingsHTTP.Port);
             webSettings.Ssl = new WebserverSettings.SslSettings { SslCertificate = cert2 };
@@ -339,7 +362,9 @@ namespace TrackerAppService
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.GET, "/", HomeRoute);
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.GET, "/settings", SettingsRoute);
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.GET, "/remoteapps", RemoteApsRoute);
-            
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.GET, "/login", LoginRoute);
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.GET, "/logout", LogoutRoute);
+
             //POST
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/add_newapp", NewAppRoute);
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/app_update", SettingsUpdateRoute);
@@ -467,6 +492,7 @@ namespace TrackerAppService
                   <li><a href='/'>Home</a></li>
                   <li><a href='/settings'>Settings</a></li>
                   <li><a href='/remoteapps'>Remote apps</a></li>
+                  <li><a href='/logout'>Logout</a></li>
                 </ul><p><p>
                 <p/><p><b>App usage status ({DateTime.Now:dd.MM.yyyy}):</b> List of applications with information for used time for current day.</p>
                 <form method='POST' id='my_form' action='/app_update'>
@@ -606,6 +632,8 @@ namespace TrackerAppService
                     $"<td {tdstyle}>{appService.appUsageLimitsDict.ContainsKey(appUsage.Key)}</td></tr>";
             }
 
+            string links = realmList[ctx.Request.Source.IpAddress].LoggedIn ? "<li><a href='/settings'>Settings</a></li><li><a href='/remoteapps'>Remote apps</a></li><li><a href='/logout'>Logout</a></li>" : "<li><a href='/login'>Login</a></li>";
+
             string html = $@"
             <html>
             <head>
@@ -654,9 +682,7 @@ namespace TrackerAppService
                 <h2>Tracker app (Host: {Environment.MachineName}, Ver: {Assembly.GetEntryAssembly().GetName().Version})   {DateTime.Now}  {DateTime.Now.DayOfWeek}</h2>
                 <h3>Home</h3>
                 <ul>
-                  <li><a href=""/"">Home</a></li>
-                  <li><a href=""/settings"">Settings</a></li>
-                  <li><a href='/remoteapps'>Remote apps</a></li>
+                  <li><a href='/'>Home</a></li>{links}
                 </ul><p><p>
                 <p><b>App usage status ({appService.lastResetDate:dd.MM.yyyy}):</b> List of applications with information for used time for current day.</p>
                 <table>
@@ -762,6 +788,7 @@ namespace TrackerAppService
                   <li><a href=""/"">Home</a></li>
                   <li><a href=""/settings"">Settings</a></li>
                   <li><a href='/remoteapps'>Remote apps</a></li>
+                  <li><a href='/logout'>Logout</a></li>
                 </ul><p><p>
                 <p><b>Remote apps list currently active:</b>List of applications.</p>
                 <table>
@@ -1016,6 +1043,25 @@ namespace TrackerAppService
             await ctx.Response.Send();
         }
 
+        public static async Task LoginRoute(HttpContextBase ctx)
+        {
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
+        }
+
+        public static async Task LogoutRoute(HttpContextBase ctx)
+        {
+            realmList[ctx.Request.Source.IpAddress].Realm = Guid.NewGuid().ToString("N");
+            realmList[ctx.Request.Source.IpAddress].LoggedIn = false;
+
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
+        }
+
         /*
         static Settings2 LoadSettings()
         {
@@ -1049,7 +1095,6 @@ namespace TrackerAppService
 
         private static bool IsAuthorized(HttpContextBase ctx) //WatsonWebserver.ServerContext ctx)
         {
-            const string Realm = "MyRealm";
 
             var authHeader = ctx.Request.Headers["Authorization"];
 
@@ -1068,7 +1113,7 @@ namespace TrackerAppService
                 return false;
 
             // Compute HA1 and HA2 for Digest Authentication validation
-            var ha1 = ComputeMD5Hash($"{settingsHTTP.WebUserName}:{Realm}:{settingsHTTP.WebPass}");
+            var ha1 = ComputeMD5Hash($"{settingsHTTP.WebUserName}:{realmList[ctx.Request.Source.IpAddress].Realm}:{settingsHTTP.WebPass}");
             var ha2 = ComputeMD5Hash($"{ctx.Request.Method}:{ctx.Request.Url.RawWithoutQuery}"); //AbsolutePath
             var validResponse = ComputeMD5Hash($"{ha1}:{authParams["nonce"]}:{authParams["nc"]}:{authParams["cnonce"]}:{authParams["qop"]}:{ha2}");
 
