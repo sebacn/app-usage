@@ -437,6 +437,9 @@ namespace TrackerAppService
                     $"<td><button type='submit' name='NotifyAppDeleteBtn' value='{item}' >Delete</button></td></tr>";
             }
 
+            string cn = server.Settings.Ssl.SslCertificate.Subject;
+            string hhost = GetLocalIPAddress().Replace(".", "-") + "." + cn.Remove(0, 3);
+
             string html = $@"
             <html>
             <head>
@@ -457,13 +460,12 @@ namespace TrackerAppService
             }}
 
             li {{
-              float: left;
-            }}
+                float: left;
+                background-color: #dddddd; }}
 
             li a {{
               display: block;
               padding: 8px;
-              background-color: #dddddd;
             }}
 
             p.double {{border - style: double;}}
@@ -481,16 +483,21 @@ namespace TrackerAppService
               text-align: left;
               width: 60px; }}
 
+            .selected{{
+                color:blue;
+                border-left:4px solid blue;
+                background-color: coral;}}
+
             tr:nth-child(even) {{background-color: #f8f8f8;}}
 
             </style>
             </head>
             <body>
-                <h2>Tracker app (Host: {Environment.MachineName}, Ver: {Assembly.GetEntryAssembly().GetName().Version})   {DateTime.Now}  {DateTime.Now.DayOfWeek}</h2>
-                <h3>Settings</h3>
+                <h2>Tracker app Ver: {Assembly.GetEntryAssembly().GetName().Version}&nbsp;&nbsp;&nbsp; Host: {Environment.MachineName}&nbsp;&nbsp;&nbsp;{DateTime.Now.DayOfWeek}&nbsp;{DateTime.Now}</h2>
+                <h4>IP: {GetLocalIPAddress()},&nbsp;&nbsp;Url: https://{hhost}</h4>
                 <ul>
                   <li><a href='/'>Home</a></li>
-                  <li><a href='/settings'>Settings</a></li>
+                  <li class='selected'><a href='/settings'>Settings</a></li>
                   <li><a href='/remoteapps'>Remote apps</a></li>
                   <li><a href='/logout'>Logout</a></li>
                 </ul><p><p>
@@ -617,7 +624,7 @@ namespace TrackerAppService
 
                 tsLimit = tsLimit > tsWindow ? tsWindow : tsLimit;
 
-                double usagePct = appUsage.Value.TotalMinutes/tsLimit.TotalMinutes *100;
+                double usagePct = appUsage.Value.TotalMinutes < tsLimit.TotalMinutes ? appUsage.Value.TotalMinutes/tsLimit.TotalMinutes *100 : 100;
 
                 TimeSpan timeNow = dtnow - dtnow.Date;
                 double fromPct = appLimit.ActiveFromTime > timeNow ? 100 : 0;
@@ -633,6 +640,9 @@ namespace TrackerAppService
             }
 
             string links = realmList[ctx.Request.Source.IpAddress].LoggedIn ? "<li><a href='/settings'>Settings</a></li><li><a href='/remoteapps'>Remote apps</a></li><li><a href='/logout'>Logout</a></li>" : "<li><a href='/login'>Login</a></li>";
+
+            string cn = server.Settings.Ssl.SslCertificate.Subject;
+            string hhost = GetLocalIPAddress().Replace(".", "-") + "." + cn.Remove(0, 3);
 
             string html = $@"
             <html>
@@ -655,12 +665,12 @@ namespace TrackerAppService
 
             li {{
               float: left;
+              background-color: #dddddd;
             }}
 
             li a {{
               display: block;
               padding: 8px;
-              background-color: #dddddd;
             }}
 
             p.double {{border - style: double;}}
@@ -674,15 +684,20 @@ namespace TrackerAppService
               padding: 8px;
               position: relative; }}
 
+            .selected{{
+                color:blue;
+                border-left:4px solid blue;
+                background-color: coral;}}
+
             tr:nth-child(even) {{background-color: #f8f8f8;}}
 
             </style>
             </head>
             <body>
-                <h2>Tracker app (Host: {Environment.MachineName}, Ver: {Assembly.GetEntryAssembly().GetName().Version})   {DateTime.Now}  {DateTime.Now.DayOfWeek}</h2>
-                <h3>Home</h3>
+                <h2>Tracker app Ver: {Assembly.GetEntryAssembly().GetName().Version}&nbsp;&nbsp;&nbsp; Host: {Environment.MachineName}&nbsp;&nbsp;&nbsp;{DateTime.Now.DayOfWeek}&nbsp;{DateTime.Now}</h2>
+                <h4>IP: {GetLocalIPAddress()},&nbsp;&nbsp;Url: https://{hhost}</h4>
                 <ul>
-                  <li><a href='/'>Home</a></li>{links}
+                  <li class='selected'><a href='/'>Home</a></li>{links}
                 </ul><p><p>
                 <p><b>App usage status ({appService.lastResetDate:dd.MM.yyyy}):</b> List of applications with information for used time for current day.</p>
                 <table>
@@ -737,6 +752,9 @@ namespace TrackerAppService
                 }
             }
 
+            string cn = server.Settings.Ssl.SslCertificate.Subject;
+            string hhost = GetLocalIPAddress().Replace(".", "-") + "." + cn.Remove(0, 3);
+
             string html = $@"
             <html>
             <head>
@@ -758,12 +776,12 @@ namespace TrackerAppService
 
             li {{
               float: left;
+              background-color: #dddddd;
             }}
 
             li a {{
               display: block;
               padding: 8px;
-              background-color: #dddddd;
             }}
 
             p.double {{border - style: double;}}
@@ -777,17 +795,22 @@ namespace TrackerAppService
               padding: 8px;
               position: relative; }}
 
+            .selected{{
+                color:blue;
+                border-left:4px solid blue;
+                background-color: coral;}}
+
             tr:nth-child(even) {{background-color: #f8f8f8;}}
 
             </style>
             </head>
             <body>
-                <h2>Tracker app (Host: {Environment.MachineName}, Ver: {Assembly.GetEntryAssembly().GetName().Version})   {DateTime.Now}  {DateTime.Now.DayOfWeek}</h2>
-                <h3>Remote apps</h3>
+                <h2>Tracker app Ver: {Assembly.GetEntryAssembly().GetName().Version}&nbsp;&nbsp;&nbsp; Host: {Environment.MachineName}&nbsp;&nbsp;&nbsp;{DateTime.Now.DayOfWeek}&nbsp;{DateTime.Now}</h2>
+                <h4>IP: {GetLocalIPAddress()},&nbsp;&nbsp;Url: https://{hhost}</h4>
                 <ul>
-                  <li><a href=""/"">Home</a></li>
-                  <li><a href=""/settings"">Settings</a></li>
-                  <li><a href='/remoteapps'>Remote apps</a></li>
+                  <li><a href='/'>Home</a></li>
+                  <li><a href='/settings'>Settings</a></li>
+                  <li class='selected'><a href='/remoteapps'>Remote apps</a></li>
                   <li><a href='/logout'>Logout</a></li>
                 </ul><p><p>
                 <p><b>Remote apps list currently active:</b>List of applications.</p>
@@ -1034,7 +1057,7 @@ namespace TrackerAppService
         public static async Task RedirectToHTTPSRoute(HttpContextBase ctx)
         {
             string cn = server.Settings.Ssl.SslCertificate.Subject;
-            string host = ctx.Request.Destination.Hostname.Replace(".", "-") + "." + cn.Remove(0, 3);
+            string host = GetLocalIPAddress().Replace(".", "-") + "." + cn.Remove(0, 3);
             string url = $"https://{host}:{settingsHTTP.PortHTTPS}{ctx.Request.Url.RawWithoutQuery}";
 
             ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
