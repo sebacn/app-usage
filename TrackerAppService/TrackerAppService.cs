@@ -1,40 +1,43 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
-using System.ServiceProcess;
-using System.Timers;
-using InfluxDB.Client;
+﻿using InfluxDB.Client;
 using InfluxDB.Client.Api.Domain;
 using InfluxDB.Client.Writes;
-using System.Security.Cryptography.X509Certificates;
-using System.Linq;
-using System.Text.Json;
-using System.Security.AccessControl;
-using System.Security.Principal;
+using Microsoft.Win32;
+using Newtonsoft.Json.Linq;
+using System;
 using System.Collections;
-using Windows.UI.Composition;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
 using System.IO.Pipes;
-using System.Threading.Tasks;
+using System.Linq;
+using System.Management;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
+using System.ServiceProcess;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
+using System.Threading.Tasks;
+using System.Timers;
+using System.Web;
 using System.Windows.Forms;
 using System.Windows.Input;
-using Windows.System;
-using Microsoft.Win32;
-using Windows.Devices.Custom;
-using System.Runtime.InteropServices;
-using Newtonsoft.Json.Linq;
-using System.Net.Sockets;
-using System.Net;
 using System.Xml.Linq;
-using System.Globalization;
-using System.Security.Cryptography;
-using System.Text.Json.Serialization;
-using System.Text;
+using Windows.Devices.Custom;
+using Windows.System;
+using Windows.UI.Composition;
 //using Windows.UI.Xaml.Shapes;
 
 namespace TrackerAppService 
 {
+    
 
     public class SettingsInflux
     {
@@ -154,16 +157,29 @@ namespace TrackerAppService
 
     public partial class TrackerAppService : ServiceBase
     {
+
+        private const int DWMWA_CLOAKED = 14;
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        internal static extern bool IsWindowVisible(IntPtr hwnd);
+
+        [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
+        internal static extern int DwmGetWindowAttribute(IntPtr IntPtr, int dwAttribute, out int pvAttribute, uint cbAttribute);
+
         public bool LogDataPoint;
 
-        private System.Timers.Timer timer10sec, timer1min;
+        private ManagementEventWatcher wmiStartWatcher;
+        private ManagementEventWatcher wmiStopWatcher;
+
+        private System.Timers.Timer timer1min;
         public Dictionary<string, TimeSpan> appUsagePerDay = new Dictionary<string, TimeSpan>();
         private HashSet<string> warnedApps = new HashSet<string>();
         //private HashSet<string> trackedApps = new HashSet<string>();
         public DateTime lastResetDate = DateTime.Now.Date;
-        CancellationTokenSource pipeServerCTS = new CancellationTokenSource();
-        Task pipeTask = null;
-        Progress<Dictionary<string, int>> tprogress = new Progress<Dictionary<string, int>>();
+        //CancellationTokenSource pipeServerCTS = new CancellationTokenSource();
+        //Task pipeTask = null;
+        CancellationTokenSource webServerCTS = new CancellationTokenSource();
+        //Progress<Dictionary<string, int>> tprogress = new Progress<Dictionary<string, int>>();
 
         string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppUsage.log");
         string influxPointBuffFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AppInfluxDB2PointData.json");
@@ -395,14 +411,28 @@ namespace TrackerAppService
 
             EventLog.WriteEntry("TrackerAppService", "Service started", EventLogEntryType.Information);
 
-            //LoadTrackedApps();
             LoadUsageAndCacheFromFIle();
 
-            timer10sec = new System.Timers.Timer(10000); // Logs every 10 seconds
-            timer10sec.Elapsed += TimerElapsed10sec;
-            timer10sec.Start();
-
             //Thread.Sleep(30000); // debug
+
+            ManagementScope scope = new ManagementScope("root\\CIMV2");
+
+            wmiStartWatcher = new ManagementEventWatcher(scope, new WqlEventQuery(
+                "__InstanceCreationEvent",
+                new TimeSpan(0, 0, 1),
+                "TargetInstance isa 'Win32_Process'"));
+            wmiStartWatcher.EventArrived += OnProcessStart;
+            wmiStartWatcher.Start();
+
+            // Process stop event
+            wmiStopWatcher = new ManagementEventWatcher(scope, new WqlEventQuery(
+                "__InstanceDeletionEvent",
+                new TimeSpan(0, 0, 1),
+                "TargetInstance isa 'Win32_Process'"));
+            wmiStopWatcher.EventArrived += OnProcessStop;
+            wmiStopWatcher.Start();
+
+            
 
             if (InfluxDBConfigOk())
             {
@@ -425,11 +455,12 @@ namespace TrackerAppService
 
             SummarizeUsage();
 
-            RunPipeServer();
+            //RunPipeServer();
+            webServerCTS = new CancellationTokenSource();
 
             //Thread.Sleep(30000); // debug
 
-            Task.Run(() => HttpServer.RunWebServerAsync(pipeServerCTS.Token, this));
+            Task.Run(() => HttpServer.RunWebServerAsync(webServerCTS.Token, this));
             
         }
 
@@ -437,11 +468,11 @@ namespace TrackerAppService
         {
             EventLog.WriteEntry("TrackerAppService", "Service stopped", EventLogEntryType.Information);
 
-            timer10sec.Stop();
-            timer10sec.Dispose();
+            wmiStartWatcher.Stop();
+            wmiStopWatcher.Stop();
 
-            pipeServerCTS.Cancel();
-            pipeTask.Wait(1000);
+            webServerCTS.Cancel();
+            //pipeTask.Wait(1000);
 
             if (timer1min != null)
             {
@@ -463,6 +494,113 @@ namespace TrackerAppService
             {
                 EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
             }
+        }
+
+        private void OnProcessStart(object sender, EventArrivedEventArgs e)
+        {
+            var proc = (ManagementBaseObject)e.NewEvent["TargetInstance"];
+
+            int pid = Convert.ToInt32(proc["ProcessId"]);
+            string name = (string)proc["Name"];
+            int sessionId = Convert.ToInt32(proc["SessionId"]);
+            string user = GetProcessOwner(proc);
+
+            EventLog.WriteEntry("TrackerAppService", $"START: {name}, PID={pid}, Session={sessionId}, User={user}", EventLogEntryType.Information);
+
+
+/*
+            Process process = Process.GetProcessById(pid);
+
+
+
+            if (process.MainWindowHandle != IntPtr.Zero
+            && IsWindowVisible(process.MainWindowHandle))
+            {
+                int cloakedVal = 0;
+                int result = DwmGetWindowAttribute(process.MainWindowHandle, DWMWA_CLOAKED, out cloakedVal, sizeof(int));
+
+                if ((result == 0 && cloakedVal != 0) == false) // 0 means success, and cloakedVal > 0 indicates a cloaked window
+                {
+                    
+                }
+            }
+
+            
+            var info = new ProcessInfo
+            {
+                Name = name,
+                PID = pid,
+                SessionId = sessionId,
+                User = user,
+                StartTime = DateTime.Now
+            };
+
+            processMap[pid] = info;
+            */
+
+            // Example log
+            //Console.WriteLine($"START: {name}, PID={pid}, Session={sessionId}, User={user}");
+
+                    
+        }
+
+        private void OnProcessStop(object sender, EventArrivedEventArgs e)
+        {
+            var proc = (ManagementBaseObject)e.NewEvent["TargetInstance"];
+            int pid = Convert.ToInt32(proc["ProcessId"]);
+
+            string name = (string)proc["Name"];
+            int sessionId = Convert.ToInt32(proc["SessionId"]);
+            string user = GetProcessOwner(proc);
+
+            /*
+            if (processMap.TryRemove(pid, out var info))
+            {
+                info.EndTime = DateTime.Now;
+                info.Duration = info.EndTime - info.StartTime;
+
+                // Example log
+                Console.WriteLine(
+                    $"END: {info.Name}, PID={info.PID}, Session={info.SessionId}, User={info.User}, " +
+                    $"Duration={info.Duration}"
+                );
+            }
+            */
+
+            EventLog.WriteEntry("TrackerAppService", $"END: {name}, PID={pid}, Session={sessionId}, User={user}", EventLogEntryType.Information);
+        }
+
+        // Extracts user name (DOMAIN\USER) from Win32_Process
+        private string GetProcessOwner(ManagementBaseObject proc)
+        {
+            var mo = proc as ManagementObject;
+            if (mo == null)
+            {
+                var path = proc.SystemProperties["__PATH"]?.Value as string;
+                if (string.IsNullOrEmpty(path))
+                {
+                    return "UNKNOWN";
+                }
+
+                mo = new ManagementObject(path);
+            }
+
+            try
+            {
+                var outParams = mo.InvokeMethod("GetOwner", null, null);
+
+                string user = outParams?["User"]?.ToString();
+                string domain = outParams?["Domain"]?.ToString();
+
+                if (!string.IsNullOrEmpty(user))
+                    return $"{domain}\\{user}";
+            }
+            catch
+            {
+                // Some system processes will fail here (access denied)
+            }
+
+            return "UNKNOWN";
         }
 
 
@@ -490,6 +628,7 @@ namespace TrackerAppService
             EventLog.WriteEntry("TrackerAppService", $"sid:{desc.SessionId}, {desc.Reason}", EventLogEntryType.Information);
         }
 
+        /*
         private void RunPipeServer()
         {
 
@@ -520,6 +659,7 @@ namespace TrackerAppService
                 EventLog.WriteEntry("TrackerAppService", $"Task completed", EventLogEntryType.SuccessAudit);
             });
         }
+        */
 
         /*
         private void LoadTrackedApps()
@@ -540,6 +680,7 @@ namespace TrackerAppService
         }
         */
 
+        /*
         private void TimerElapsed10sec(object sender, ElapsedEventArgs e)
         {
 
@@ -562,6 +703,7 @@ namespace TrackerAppService
             }
 
         }
+        */
 
         private void Timer1minElapsed(object sender, ElapsedEventArgs e)
         {
@@ -686,7 +828,9 @@ namespace TrackerAppService
             string title = $"{appTitle.ToUpper()} Usage Limit";
             //MessageBox.Show(message, "Usage Limit Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
-            new ProcessServices().StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + $" app-notify \"{title}\" \"{message}\"");
+            //new ProcessServices().StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + $" app-notify \"{title}\" \"{message}\"");
+            var ps1File = "msgNotify.ps1";
+            SessionProcessLauncher.RunProcessInActiveSession("powershell.exe", 0, $"-NoProfile -ExecutionPolicy ByPass -File \"{ps1File}\" -mtitle \"{title}\" -mtext \"{message}\"");
 
         }
 

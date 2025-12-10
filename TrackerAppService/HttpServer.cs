@@ -1,4 +1,6 @@
 ﻿using InfluxDB.Client.Api.Domain;
+using Microsoft.IdentityModel.Tokens;
+using NetFwTypeLib;
 //using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
@@ -7,6 +9,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
+using System.IdentityModel.Tokens.Jwt;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -16,6 +19,7 @@ using System.Reactive;
 using System.Reflection;
 using System.Runtime.ConstrainedExecution;
 using System.Runtime.Remoting.Contexts;
+using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Policy;
@@ -27,6 +31,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Timers;
+
 using System.Web.Routing;
 using System.Web.UI.WebControls;
 using System.Windows.Forms;
@@ -42,7 +47,6 @@ using Windows.UI.Xaml.Controls;
 using static System.Net.WebRequestMethods;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.StartPanel;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.TrayNotify;
-using NetFwTypeLib;
 
 namespace TrackerAppService
 {
@@ -86,6 +90,7 @@ namespace TrackerAppService
     {
         public bool Enabled { get; set; } = false;
         public string WebUserName { get; set; } = "";
+        public string JWTSecretKey { get; set; } = "";
         [JsonInclude]
         private byte[] WebPassCRT { get; set; } = new byte[10];
         public string CertName { get; set; } = "";
@@ -190,10 +195,11 @@ namespace TrackerAppService
         static private WebserverBase server = null;
         static private WebserverBase serverRedirect = null;
         //public static HttpListener listener = null;
+        private static byte[] SecretKeyBytes = null;
 
         static private TrackerAppService appService;
 
-        static public Dictionary<string, AuthRef> realmList = new Dictionary<string, AuthRef>();
+        //static public Dictionary<string, AuthRef> realmList = new Dictionary<string, AuthRef>();
 
 
         private static void Timer1minElapsed(object sender, ElapsedEventArgs e)
@@ -257,38 +263,51 @@ namespace TrackerAppService
 
         private static async Task AuthenticateRequest(HttpContextBase ctx)
         {
-
+            /*
             if (!realmList.ContainsKey(ctx.Request.Source.IpAddress))
             {
                 realmList.Add(ctx.Request.Source.IpAddress, new AuthRef { Realm = Guid.NewGuid().ToString("N") });
             }
+            */
 
-            if (ctx.Request.Url.RawWithoutQuery == "/")
+            if (ctx.Request.Url.RawWithoutQuery == "/" 
+             || ctx.Request.Url.RawWithoutQuery == "/login"
+             || ctx.Request.Url.RawWithoutQuery == "/login_check"
+             || isAuthorized(ctx))
             {
                 return;
             }
 
-            if (ctx.Request.Headers["Authorization"] == null || !IsAuthorized(ctx))
-            {
-                realmList[ctx.Request.Source.IpAddress].LoggedIn = false;
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/login");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
 
-                string html = $@"<!DOCTYPE html><html>
-                <head><title>401 Denied</title></head><body>
-                <center><h1>404 access denied</h1></center>
-                <hr><center>nginx</center>
-                </body></html>";
 
-                // Send 401 Unauthorized response with Digest Auth header
-                var nonce = Guid.NewGuid().ToString("N");
-                ctx.Response.StatusCode = (int)HttpStatusCode.Unauthorized;
-                ctx.Response.Headers["WWW-Authenticate"] = $"Digest realm=\"{realmList[ctx.Request.Source.IpAddress].Realm}\", nonce=\"{nonce}\", algorithm=\"MD5\", qop=\"auth,auth-int\"";
-                ctx.Response.ContentType = "text/html";
-                await ctx.Response.Send(html);
-            }
-            else
-            {
-                realmList[ctx.Request.Source.IpAddress].LoggedIn = true;
-            }
+            /*
+                        if (ctx.Request.Headers["Authorization"] == null || !CheckAndAuthorize(ctx))
+                        {
+                            //realmList[ctx.Request.Source.IpAddress].LoggedIn = false;
+
+                            string html = $@"<!DOCTYPE html><html>
+                            <head><title>401 Denied</title></head><body>
+                            <center><h1>404 access denied</h1></center>
+                            <hr><center>nginx</center>
+                            </body></html>";
+
+                            // Send 401 Unauthorized response with Digest Auth header
+                            var nonce = Guid.NewGuid().ToString("N");
+                            ctx.Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+                            ctx.Response.Headers["WWW-Authenticate"] = $"Digest realm=\"TrackerAppService\", nonce=\"{nonce}\", algorithm=\"MD5\", qop=\"auth,auth-int\"";
+                            ctx.Response.ContentType = "text/html";
+                            await ctx.Response.Send(html);
+                        }
+
+                        else
+                        {
+                            realmList[ctx.Request.Source.IpAddress].LoggedIn = true;
+                        }
+                        */
         }
 
         public static async Task RunWebServerAsync(CancellationToken ct, TrackerAppService _appService)
@@ -322,6 +341,8 @@ namespace TrackerAppService
             {
                 return;
             }
+
+            SecretKeyBytes = Encoding.UTF8.GetBytes(settingsHTTP.JWTSecretKey);
 
             FirewallHelper.OpenPort(settingsHTTP.Port, $"TrackerAppService_IN{settingsHTTP.Port}", NET_FW_IP_PROTOCOL_.NET_FW_IP_PROTOCOL_TCP);
             FirewallHelper.OpenPort(settingsHTTP.PortHTTPS, $"TrackerAppService_IN{settingsHTTP.PortHTTPS}", NET_FW_IP_PROTOCOL_.NET_FW_IP_PROTOCOL_TCP);
@@ -371,7 +392,8 @@ namespace TrackerAppService
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/add_notify_rapp", RemoteAppAddRoute);
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/del_notify_rapp", RemoteAppDelRoute);
             server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/web_config_update", WebConfigUpdateRoute);
-            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/influx_config_update", InfluxConfigUpdateRoute);            
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/influx_config_update", InfluxConfigUpdateRoute);
+            server.Routes.PostAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/login_check", LoginCheckRoute);
 
             //no auth
             server.Routes.PreAuthentication.Parameter.Add(WatsonWebserver.Core.HttpMethod.POST, "/handle_notify_from_rapp", ReceiveNotifyFromRemoteAppRoute);
@@ -437,8 +459,10 @@ namespace TrackerAppService
                     $"<td><button type='submit' name='NotifyAppDeleteBtn' value='{item}' >Delete</button></td></tr>";
             }
 
-            string cn = server.Settings.Ssl.SslCertificate.Subject;
-            string hhost = GetLocalIPAddress().Replace(".", "-") + "." + cn.Remove(0, 3);
+            string cn = server.Settings.Ssl.Enable ? server.Settings.Ssl.SslCertificate.Subject : "";
+            string lip = GetLocalIPAddress();
+
+            string hhost = lip != "" ? lip.Replace(".", "-") : "" + "." + cn != "" ? cn.Remove(0, 3) : "";
 
             string html = $@"
             <html>
@@ -639,10 +663,12 @@ namespace TrackerAppService
                     $"<td {tdstyle}>{appService.appUsageLimitsDict.ContainsKey(appUsage.Key)}</td></tr>";
             }
 
-            string links = realmList[ctx.Request.Source.IpAddress].LoggedIn ? "<li><a href='/settings'>Settings</a></li><li><a href='/remoteapps'>Remote apps</a></li><li><a href='/logout'>Logout</a></li>" : "<li><a href='/login'>Login</a></li>";
+            string links = isAuthorized(ctx)? "<li><a href='/settings'>Settings</a></li><li><a href='/remoteapps'>Remote apps</a></li><li><a href='/logout'>Logout</a></li>" : "<li><a href='/login'>Login</a></li>";
 
-            string cn = server.Settings.Ssl.SslCertificate.Subject;
-            string hhost = GetLocalIPAddress().Replace(".", "-") + "." + cn.Remove(0, 3);
+            string cn = server.Settings.Ssl.Enable? server.Settings.Ssl.SslCertificate.Subject : "";
+            string lip = GetLocalIPAddress();
+
+            string hhost = lip != ""? lip.Replace(".", "-"): "" + "." + cn != ""? cn.Remove(0, 3) : "";
 
             string html = $@"
             <html>
@@ -752,8 +778,10 @@ namespace TrackerAppService
                 }
             }
 
-            string cn = server.Settings.Ssl.SslCertificate.Subject;
-            string hhost = GetLocalIPAddress().Replace(".", "-") + "." + cn.Remove(0, 3);
+            string cn = server.Settings.Ssl.Enable ? server.Settings.Ssl.SslCertificate.Subject : "";
+            string lip = GetLocalIPAddress();
+
+            string hhost = lip != "" ? lip.Replace(".", "-") : "" + "." + cn != "" ? cn.Remove(0, 3) : "";
 
             string html = $@"
             <html>
@@ -1068,6 +1096,193 @@ namespace TrackerAppService
 
         public static async Task LoginRoute(HttpContextBase ctx)
         {
+
+            
+            string links = isAuthorized(ctx) ? "<li><a href='/settings'>Settings</a></li><li><a href='/remoteapps'>Remote apps</a></li><li><a href='/logout'>Logout</a></li>" : "<li><a href='/login'>Login</a></li>";
+
+            string cn = server.Settings.Ssl.Enable ? server.Settings.Ssl.SslCertificate.Subject : "";
+            string lip = GetLocalIPAddress();
+
+            string hhost = lip != "" ? lip.Replace(".", "-") : "" + "." + cn != "" ? cn.Remove(0, 3) : "";
+
+            string html = $@"
+            <html>
+            <head>
+            <style>
+            td .bg {{position: absolute;
+                left: 0;
+                top: 0;
+                bottom: 0;
+                background-color: #8ef;
+                z-index: -1;
+            }}
+
+            ul {{
+              list-style-type: none;
+              margin: 0;
+              padding: 0;
+              overflow: hidden;
+            }}
+
+            li {{
+              float: left;
+              background-color: #dddddd;
+            }}
+
+            li a {{
+              display: block;
+              padding: 8px;
+            }}
+
+            p.double {{border - style: double;}}
+
+            table {{font - family: arial, sans-serif;
+              border-collapse: collapse;
+              width: 90%;  }}
+
+            td, th {{border: 1px solid #dddddd;
+              text-align: left;
+              padding: 8px;
+              position: relative; }}
+
+            .selected{{
+                color:blue;
+                border-left:4px solid blue;
+                background-color: coral;}}
+
+            tr:nth-child(even) {{background-color: #f8f8f8;}}
+
+body {{
+            font-family: Arial, sans-serif;
+            background: #f0f0f0;
+        }}
+        .login-container {{
+            width: 300px;
+            margin: 100px auto;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.15);
+        }}
+        input[type=""text""], input[type=""password""] {{
+            width: 100%;
+            padding: 10px;
+            margin: 8px 0 14px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }}
+        button {{
+            width: 100%;
+            padding: 10px;
+            background: #0077cc;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }}
+        button:hover {{
+            background: #005fa3;
+        }}
+        .remember {{
+            margin-bottom: 12px;
+        }}
+
+            </style>
+            </head>
+            <body>
+                <h2>Tracker app Ver: {Assembly.GetEntryAssembly().GetName().Version}&nbsp;&nbsp;&nbsp; Host: {Environment.MachineName}&nbsp;&nbsp;&nbsp;{DateTime.Now.DayOfWeek}&nbsp;{DateTime.Now}</h2>
+                <h4>IP: {GetLocalIPAddress()},&nbsp;&nbsp;Url: https://{hhost}</h4>
+                <ul>
+                  <li class='selected'><a href='/'>Home</a></li>{links}
+                </ul><p><p>                
+            <div class=""login-container"">
+                <h2>Login</h2>
+
+                <form method=""POST"" action=""/login_check"">
+                    <label for=""username"">Username</label>
+                    <input 
+                        type=""text"" 
+                        name=""username"" 
+                        id=""username""
+                        required 
+                        autocomplete=""username""
+                    />
+
+                    <label for=""password"">Password</label>
+                    <input 
+                        type=""password"" 
+                        name=""password"" 
+                        id=""password"" 
+                        required 
+                        autocomplete=""current-password""
+                    />
+
+                    <div class=""remember"">
+                        <input type=""checkbox"" id=""remember"" name=""remember"" />
+                        <label for=""remember"">Remember me</label>
+                    </div>
+
+                    <button type=""submit"">Login</button>
+                </form>
+            </div>
+            </body>
+            </html>";
+
+            ctx.Response.StatusCode = (int)HttpStatusCode.OK;
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send(html);
+
+
+            /*
+            ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
+            ctx.Response.Headers.Add("Location", "/");
+            ctx.Response.ContentType = "text/html";
+            await ctx.Response.Send();
+            */
+        }
+
+        public static async Task LoginCheckRoute(HttpContextBase ctx)
+        {
+            var body = ctx.Request.DataAsString;
+            var parsed = System.Web.HttpUtility.ParseQueryString(body);
+
+            string username = parsed["username"];
+            string password = parsed["password"];
+
+            if (username == settingsHTTP.WebUserName 
+             && password == settingsHTTP.WebPass)
+            {
+
+                var claims = new[]
+                {
+                    new Claim(JwtRegisteredClaimNames.Sub, username),
+                    new Claim("role", "user"),
+                    new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+                };
+
+                // Create token
+                var key = new SymmetricSecurityKey(SecretKeyBytes);
+                var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+                var now = DateTime.UtcNow;
+                var jwt = new JwtSecurityToken(
+                    issuer: "watson-demo",
+                    audience: "watson-demo-audience",
+                    claims: claims,
+                    notBefore: now,
+                    expires: now.AddHours(3),
+                    signingCredentials: creds);
+
+                string token = new JwtSecurityTokenHandler().WriteToken(jwt);
+
+                System.Web.HttpCookie cookie = new System.Web.HttpCookie("Authorization");
+                // Set value of cookie to current date time.
+                cookie.Value = $"Bearer {token}";
+                // Set cookie to expire in 10 minutes.
+                cookie.Expires = now.AddHours(3);
+
+                ctx.Response.Headers.Add("Set-Cookie", HttpCookieToSetCookieString(cookie));
+            }
+
             ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
             ctx.Response.Headers.Add("Location", "/");
             ctx.Response.ContentType = "text/html";
@@ -1076,9 +1291,43 @@ namespace TrackerAppService
 
         public static async Task LogoutRoute(HttpContextBase ctx)
         {
-            realmList[ctx.Request.Source.IpAddress].Realm = Guid.NewGuid().ToString("N");
-            realmList[ctx.Request.Source.IpAddress].LoggedIn = false;
 
+            string cookie = ctx.Request.Headers["Cookie"];
+
+            if (!string.IsNullOrWhiteSpace(cookie)
+             && System.Web.HttpCookie.TryParse(cookie, out var cvalue))
+            {
+                var claims = new[]
+                {
+                    new Claim(JwtRegisteredClaimNames.Sub, "nobody"),
+                    new Claim("role", "user"),
+                    new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+                };
+
+                var key = new SymmetricSecurityKey(SecretKeyBytes);
+                var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+                var now = DateTime.UtcNow;
+                var jwt = new JwtSecurityToken(
+                    issuer: "watson-demo",
+                    audience: "watson-demo-audience",
+                    claims: claims,
+                    notBefore: now.AddDays(-4),
+                    expires: now.AddDays(-3),
+                    signingCredentials: creds);
+
+                string token = new JwtSecurityTokenHandler().WriteToken(jwt);
+
+                cvalue.Value = $"Bearer {token}";
+                cvalue.Expires = now.AddDays(-3);
+
+                ctx.Response.Headers.Add("Set-Cookie", HttpCookieToSetCookieString(cvalue));
+            }
+
+            if (ctx.Response.Headers["Authorization"] != null)
+            {
+                ctx.Response.Headers.Remove("Authorization");
+            }
+            
             ctx.Response.StatusCode = (int)HttpStatusCode.Redirect;
             ctx.Response.Headers.Add("Location", "/");
             ctx.Response.ContentType = "text/html";
@@ -1116,7 +1365,8 @@ namespace TrackerAppService
             return "";
         }
 
-        private static bool IsAuthorized(HttpContextBase ctx) //WatsonWebserver.ServerContext ctx)
+        /*
+        private static bool CheckAndAuthorize(HttpContextBase ctx) //WatsonWebserver.ServerContext ctx)
         {
 
             var authHeader = ctx.Request.Headers["Authorization"];
@@ -1136,12 +1386,146 @@ namespace TrackerAppService
                 return false;
 
             // Compute HA1 and HA2 for Digest Authentication validation
-            var ha1 = ComputeMD5Hash($"{settingsHTTP.WebUserName}:{realmList[ctx.Request.Source.IpAddress].Realm}:{settingsHTTP.WebPass}");
+            var ha1 = ComputeMD5Hash($"{settingsHTTP.WebUserName}:TrackerAppService:{settingsHTTP.WebPass}");
             var ha2 = ComputeMD5Hash($"{ctx.Request.Method}:{ctx.Request.Url.RawWithoutQuery}"); //AbsolutePath
             var validResponse = ComputeMD5Hash($"{ha1}:{authParams["nonce"]}:{authParams["nc"]}:{authParams["cnonce"]}:{authParams["qop"]}:{ha2}");
 
             // Check if the response matches
-            return string.Equals(authParams["response"], validResponse, StringComparison.OrdinalIgnoreCase);
+            bool ret = string.Equals(authParams["response"], validResponse, StringComparison.OrdinalIgnoreCase);
+
+            if (ret)
+            {
+                string username = authParams["username"];
+
+                var claims = new[]
+                {
+                    new Claim(JwtRegisteredClaimNames.Sub, username),
+                    new Claim("role", "user"),
+                    new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+                };
+
+                // Create token
+                var key = new SymmetricSecurityKey(SecretKeyBytes);
+                var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+                var now = DateTime.UtcNow;
+                var jwt = new JwtSecurityToken(
+                    issuer: "watson-demo",
+                    audience: "watson-demo-audience",
+                    claims: claims,
+                    notBefore: now,
+                    expires: now.AddHours(3),
+                    signingCredentials: creds);
+
+                string token = new JwtSecurityTokenHandler().WriteToken(jwt);                
+
+                System.Web.HttpCookie cookie = new System.Web.HttpCookie("Authorization");
+                // Set value of cookie to current date time.
+                cookie.Value = $"Bearer {token}";
+                // Set cookie to expire in 10 minutes.
+                cookie.Expires = now.AddHours(3);
+
+                ctx.Response.Headers.Add("Set-Cookie", HttpCookieToSetCookieString(cookie));
+            }
+
+            return ret;
+        }
+        */
+
+        public static string HttpCookieToSetCookieString(System.Web.HttpCookie cookie)
+        {
+            if (cookie == null) throw new ArgumentNullException(nameof(cookie));
+
+            var sb = new System.Text.StringBuilder();
+
+            // name=value
+            sb.Append($"{cookie.Name}={cookie.Value}");
+
+            // Domain=
+            if (!string.IsNullOrWhiteSpace(cookie.Domain))
+                sb.Append($"; Domain={cookie.Domain}");
+
+            // Path=
+            if (!string.IsNullOrWhiteSpace(cookie.Path))
+                sb.Append($"; Path={cookie.Path}");
+
+            // Expires=
+            if (cookie.Expires != DateTime.MinValue)
+                sb.Append($"; Expires={cookie.Expires.ToUniversalTime():R}"); // RFC1123 format
+
+            // Secure
+            if (cookie.Secure)
+                sb.Append("; Secure");
+
+            // HttpOnly
+            if (cookie.HttpOnly)
+                sb.Append("; HttpOnly");
+
+            // SameSite=
+            // HttpCookie exposes SameSite in .NET Framework 4.7.2+
+#if NET472_OR_GREATER
+    if (cookie.SameSite != SameSiteMode.Unspecified)
+        sb.Append($"; SameSite={cookie.SameSite}");
+#endif
+
+            return sb.ToString();
+        }
+
+
+        private static bool isAuthorized(HttpContextBase ctx) //WatsonWebserver.ServerContext ctx)
+        {
+            bool ret = false;
+
+            string cc = ctx.Request.Headers["Cookie"];
+
+            if (cc != null 
+             && cc.Contains("Authorization=Bearer"))
+            {
+                string cookie = ctx.Request.Headers["Cookie"];
+
+                if (System.Web.HttpCookie.TryParse(cookie, out var cvalue))
+                {
+                    if (cvalue.Name == "Authorization")
+                    {
+                        
+                        string token = cvalue.Value.Substring("Bearer ".Length).Trim();
+
+                        var tokenHandler = new JwtSecurityTokenHandler();
+
+                        var validationParameters = new TokenValidationParameters
+                        {
+                            ValidateIssuerSigningKey = true,
+                            IssuerSigningKey = new SymmetricSecurityKey(SecretKeyBytes),
+
+                            ValidateIssuer = true,
+                            ValidIssuer = "watson-demo",
+
+                            ValidateAudience = true,
+                            ValidAudience = "watson-demo-audience",
+
+                            ValidateLifetime = true,
+                            ClockSkew = TimeSpan.FromSeconds(30) // small leeway
+                        };
+
+                        try
+                        {
+                            // ValidateToken throws on invalid token; returns ClaimsPrincipal when valid
+                            var principal = tokenHandler.ValidateToken(token, validationParameters, out var validatedToken);
+
+                            // Attach principal to context metadata for downstream handlers
+                            //ctx.Metadata["user"] = principal;
+
+                            // Do not send a response here — returning allows PostAuthentication route handlers to execute.
+                            ret = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            EventLog.WriteEntry("TrackerAppService", $"Token validatein failed: {ex.Message}", EventLogEntryType.Information);
+                        }
+                    }
+                }
+            }
+
+            return ret;
         }
 
         // Function to parse the Digest Authorization header
