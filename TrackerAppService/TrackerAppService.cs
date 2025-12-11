@@ -5,6 +5,7 @@ using Microsoft.Win32;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -123,11 +124,46 @@ namespace TrackerAppService
 
     }
 
+    public class ProcessUsageCache
+    {
+        public ConcurrentDictionary<string, ProcessInfo> ProcessMap { get; set; }
+        public ConcurrentDictionary<int, string> ProcessKeyMap { get; set; }
+    }
+
+    public class ProcessInfo
+    {
+        public string Name { get; set; } = "";
+        public int PID { get; set; } = 0;
+        public int SessionId { get; set; } = 0;
+        public string User { get; set; } = "";
+        public DateTime StartTime { get; set; }
+        public DateTime EndTime { get; set; }
+        public TimeSpan Duration { get; set; }
+        public bool IsActive { get; set; } = false;
+        public bool IsUpdated { get; set; } = false;
+
+        public TimeSpan DurationF
+        {
+            get
+            {
+                TimeSpan ts = new TimeSpan(0, 0, 0);
+
+                if (IsActive)
+                {
+                    ts = DateTime.Now - StartTime;
+                }
+
+                return Duration + ts;
+            }
+        }
+    }
+
     public class DataPoint
     {
         public String Host { get; set; }
         public String IP { get; set; }
         public String Application { get; set; }
+        public String User { get; set; }
         public int RunTimeMinutes { get; set; }
         public int LimitTimeMinutes { get; set; }
     }
@@ -172,7 +208,7 @@ namespace TrackerAppService
         private ManagementEventWatcher wmiStopWatcher;
 
         private System.Timers.Timer timer1min;
-        public Dictionary<string, TimeSpan> appUsagePerDay = new Dictionary<string, TimeSpan>();
+        //public Dictionary<string, TimeSpan> appUsagePerDay = new Dictionary<string, TimeSpan>();
         private HashSet<string> warnedApps = new HashSet<string>();
         //private HashSet<string> trackedApps = new HashSet<string>();
         public DateTime lastResetDate = DateTime.Now.Date;
@@ -192,6 +228,8 @@ namespace TrackerAppService
 
         Dictionary<DateTime, List<DataPoint>> InfluxPointBuff = new Dictionary<DateTime, List<DataPoint>>();
         public Dictionary<string, AppLimitConfig> appUsageLimitsDict = new Dictionary<string, AppLimitConfig>();
+        public ConcurrentDictionary<string, ProcessInfo> processMap = new ConcurrentDictionary<string, ProcessInfo>();
+        public ConcurrentDictionary<int, string> processKeyMap = new ConcurrentDictionary<int, string>();
 
         public SettingsInflux influxConfig = null;
 
@@ -231,21 +269,22 @@ namespace TrackerAppService
 
             DateTime dtnow = DateTime.Now;
 
-            foreach (var entry in appUsagePerDay.Where(k => (int)k.Value.TotalMinutes >= 1 || k.Value == TimeSpan.Zero))
+            foreach (var entry in processMap.Where(k => k.Value.IsUpdated == true))
             {
                 TimeSpan tslimit = TimeSpan.FromDays(1);
 
-                if (appUsageLimitsDict.ContainsKey(entry.Key))
+                if (appUsageLimitsDict.ContainsKey(entry.Value.Name))
                 {
-                    tslimit = appUsageLimitsDict[entry.Key].UsageLimitsPerDay[dtnow.DayOfWeek];
+                    tslimit = appUsageLimitsDict[entry.Value.Name].UsageLimitsPerDay[dtnow.DayOfWeek];
                 }
 
                 var point = new DataPoint {
                     Host = Environment.MachineName,
                     IP = GetLocalIPAddress(),
-                    Application = entry.Key,
-                    RunTimeMinutes = (int)entry.Value.TotalMinutes,
-                    LimitTimeMinutes = (int)tslimit.TotalMinutes
+                    Application = entry.Value.Name,
+                    RunTimeMinutes = (int)entry.Value.Duration.TotalMinutes,
+                    LimitTimeMinutes = (int)tslimit.TotalMinutes,
+                    User = entry.Value.User
                 };
 
                 ret.Add(point);
@@ -254,11 +293,11 @@ namespace TrackerAppService
             InfluxPointBuff.Add(dt, ret);
 
             //remove zero items
-            List<string> keys = new List<string>(appUsagePerDay.Keys);
+            List<string> keys = new List<string>(processMap.Keys);
 
-            foreach (string key in keys.Where(k => appUsagePerDay[k] == TimeSpan.Zero))
+            foreach (string key in keys.Where(k => processMap[k].IsUpdated == true))
             {
-                appUsagePerDay.Remove(key);
+                processMap[key].IsUpdated = false;
             }
 
             //log
@@ -367,8 +406,9 @@ namespace TrackerAppService
                                     .Tag("host", point.Host)
                                     .Tag("ip", point.IP)
                                     .Tag("application", point.Application)
+                                    .Tag("user", point.User)
                                     .Field("run-time-minutes", point.RunTimeMinutes)
-                                    .Field("limit-time-minutes", point.LimitTimeMinutes)
+                                    .Field("limit-time-minutes", point.LimitTimeMinutes)                                    
                                     .Timestamp(key, WritePrecision.S);
 
                                 lpd.Add(influxPoint);
@@ -432,14 +472,9 @@ namespace TrackerAppService
             wmiStopWatcher.EventArrived += OnProcessStop;
             wmiStopWatcher.Start();
 
-            
-
-            if (InfluxDBConfigOk())
-            {
-                timer1min = new System.Timers.Timer(60000); // Logs every 1 min
-                timer1min.Elapsed += Timer1minElapsed;
-                timer1min.Start();
-            }
+            timer1min = new System.Timers.Timer(60000); // Logs every 1 min
+            timer1min.Elapsed += Timer1minElapsed;
+            timer1min.Start();
 
             DateTime now = DateTime.Now;
             string logEntry = $"{now}: TrackerAppService started";
@@ -503,45 +538,51 @@ namespace TrackerAppService
             int pid = Convert.ToInt32(proc["ProcessId"]);
             string name = (string)proc["Name"];
             int sessionId = Convert.ToInt32(proc["SessionId"]);
-            string user = GetProcessOwner(proc);
 
-            EventLog.WriteEntry("TrackerAppService", $"START: {name}, PID={pid}, Session={sessionId}, User={user}", EventLogEntryType.Information);
-
-
-/*
-            Process process = Process.GetProcessById(pid);
-
-
-
-            if (process.MainWindowHandle != IntPtr.Zero
-            && IsWindowVisible(process.MainWindowHandle))
+            if (sessionId == 0)
             {
-                int cloakedVal = 0;
-                int result = DwmGetWindowAttribute(process.MainWindowHandle, DWMWA_CLOAKED, out cloakedVal, sizeof(int));
-
-                if ((result == 0 && cloakedVal != 0) == false) // 0 means success, and cloakedVal > 0 indicates a cloaked window
-                {
-                    
-                }
+                return;
             }
 
-            
-            var info = new ProcessInfo
+            string user = GetProcessOwner(proc);
+
+            if (user == "")
             {
-                Name = name,
-                PID = pid,
-                SessionId = sessionId,
-                User = user,
-                StartTime = DateTime.Now
-            };
+                return;
+            }
 
-            processMap[pid] = info;
-            */
+            //EventLog.WriteEntry("TrackerAppService", $"START: {name}, PID={pid}, Session={sessionId}, User={user}", EventLogEntryType.Information);
 
-            // Example log
-            //Console.WriteLine($"START: {name}, PID={pid}, Session={sessionId}, User={user}");
+            ProcessInfo pinfo = null;
 
-                    
+            string skey = $"{user}-{name}";
+
+            processKeyMap[pid] = skey;
+
+            if (processMap.ContainsKey(skey))
+            {
+                pinfo = processMap[skey];
+                pinfo.StartTime = DateTime.Now;
+            }
+            else
+            {
+                pinfo = new ProcessInfo
+                {
+                    Name = name,
+                    PID = pid,
+                    SessionId = sessionId,
+                    User = user,
+                    StartTime = DateTime.Now
+                };
+            }
+
+            pinfo.IsActive = true;
+
+            processMap[skey] = pinfo;
+
+            LogUsage(pinfo);
+            CheckUsageLimit(pinfo);
+
         }
 
         private void OnProcessStop(object sender, EventArrivedEventArgs e)
@@ -551,23 +592,26 @@ namespace TrackerAppService
 
             string name = (string)proc["Name"];
             int sessionId = Convert.ToInt32(proc["SessionId"]);
-            string user = GetProcessOwner(proc);
 
-            /*
-            if (processMap.TryRemove(pid, out var info))
+            if (sessionId == 0) { return; }
+
+            if (processKeyMap.ContainsKey(pid))
             {
-                info.EndTime = DateTime.Now;
-                info.Duration = info.EndTime - info.StartTime;
+                if (processKeyMap.TryRemove(pid, out string skey))
+                {
+                    var pinfo = processMap[skey];
 
-                // Example log
-                Console.WriteLine(
-                    $"END: {info.Name}, PID={info.PID}, Session={info.SessionId}, User={info.User}, " +
-                    $"Duration={info.Duration}"
-                );
+                    pinfo.EndTime = DateTime.Now;
+                    pinfo.IsActive = false;
+                    pinfo.Duration = pinfo.Duration + (pinfo.EndTime - pinfo.StartTime);
+
+                    processMap[skey] = pinfo;
+
+                    LogUsage(pinfo);
+                }
             }
-            */
 
-            EventLog.WriteEntry("TrackerAppService", $"END: {name}, PID={pid}, Session={sessionId}, User={user}", EventLogEntryType.Information);
+            //EventLog.WriteEntry("TrackerAppService", $"END: {name}, PID={pid}, Session={sessionId}, User={user}", EventLogEntryType.Information);
         }
 
         // Extracts user name (DOMAIN\USER) from Win32_Process
@@ -579,7 +623,7 @@ namespace TrackerAppService
                 var path = proc.SystemProperties["__PATH"]?.Value as string;
                 if (string.IsNullOrEmpty(path))
                 {
-                    return "UNKNOWN";
+                    return "";
                 }
 
                 mo = new ManagementObject(path);
@@ -593,14 +637,14 @@ namespace TrackerAppService
                 string domain = outParams?["Domain"]?.ToString();
 
                 if (!string.IsNullOrEmpty(user))
-                    return $"{domain}\\{user}";
+                    return user; //$"{domain}\\{user}";
             }
             catch
             {
                 // Some system processes will fail here (access denied)
             }
 
-            return "UNKNOWN";
+            return "";
         }
 
 
@@ -628,82 +672,7 @@ namespace TrackerAppService
             EventLog.WriteEntry("TrackerAppService", $"sid:{desc.SessionId}, {desc.Reason}", EventLogEntryType.Information);
         }
 
-        /*
-        private void RunPipeServer()
-        {
-
-            pipeServerCTS = new CancellationTokenSource();
-
-            tprogress.ProgressChanged += (s, appList) =>
-            {
-                foreach (var pl in appList)
-                {
-                    if (!appUsagePerDay.ContainsKey(pl.Key))
-                    {
-                        appUsagePerDay[pl.Key] = TimeSpan.Zero;
-                    }
-                    
-                    appUsagePerDay[pl.Key] += TimeSpan.FromSeconds(10); //+10 sec
-
-                    LogUsage(pl.Key);
-                    CheckUsageLimit(pl.Key, pl.Value);
-                }
-
-                //EventLog.WriteEntry("TrackerAppService", $"ProgressChanged: {string.Join(", ", appList.Keys.ToArray())}", EventLogEntryType.Warning);
-            };
-
-            pipeTask = Task.Run(() => RunPipeServerAsync(tprogress, pipeServerCTS.Token));
-
-            pipeTask.GetAwaiter().OnCompleted(() =>
-            {
-                EventLog.WriteEntry("TrackerAppService", $"Task completed", EventLogEntryType.SuccessAudit);
-            });
-        }
-        */
-
-        /*
-        private void LoadTrackedApps()
-        {
-            appUsageLimitsDict.Clear();
-
-            if (System.IO.File.Exists(appUsageLimitsFilePath))
-            {
-                string json = System.IO.File.ReadAllText(appUsageLimitsFilePath);
-                appUsageLimitsDict = JsonSerializer.Deserialize<Dictionary<string, AppLimitConfig>> (json) ?? new Dictionary<string, AppLimitConfig>();
-            }
-
-            if (System.IO.File.Exists(influxPointBuffFilePath))
-            {
-                string json = System.IO.File.ReadAllText(influxPointBuffFilePath);
-                InfluxPointBuff = JsonSerializer.Deserialize<Dictionary<DateTime, List<DataPoint>>>(json) ?? new Dictionary<DateTime, List<DataPoint>>();
-            }
-        }
-        */
-
-        /*
-        private void TimerElapsed10sec(object sender, ElapsedEventArgs e)
-        {
-
-            if (IsSessionLocked)
-            {
-                return;
-            }
-
-            try
-            {
-                ProcessServices pss = new ProcessServices();
-                string rkey = $"app-list-123";
-
-                pss.StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + " " + rkey);
-                
-            }
-            catch (Exception ex)
-            {
-                EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
-            }
-
-        }
-        */
+        
 
         private void Timer1minElapsed(object sender, ElapsedEventArgs e)
         {
@@ -713,6 +682,14 @@ namespace TrackerAppService
 
                 SendDataToInfluxDB();
             }
+
+            List<string> keys = new List<string>(processMap.Keys);
+
+            foreach (string key in keys)
+            {
+                CheckUsageLimit(processMap[key]);
+            }
+            
         }
 
         private void ResetUsageIfNewDay()
@@ -727,12 +704,7 @@ namespace TrackerAppService
                
                 AddInfluxPointData(newDate.AddMinutes(-1).ToUniversalTime());
 
-                List<string> keys = new List<string>(appUsagePerDay.Keys);
-
-                foreach (string key in keys)
-                {
-                    appUsagePerDay[key] = TimeSpan.Zero;
-                }
+                processMap = new ConcurrentDictionary<string, ProcessInfo>();
 
                 AddInfluxPointData(newDate.ToUniversalTime()); //new Date 00.00.00
 
@@ -755,23 +727,23 @@ namespace TrackerAppService
         }
 
 
-        private void LogUsage(string appTitle)
+        private void LogUsage(ProcessInfo pinfo)
         {
             TimeSpan duration = TimeSpan.Zero;
             DateTime dtnow = DateTime.Now;
 
             TimeSpan remainingTime = TimeSpan.FromDays(1) - TimeSpan.FromSeconds(1);
 
-            if (appUsageLimitsDict.ContainsKey(appTitle))
+            if (appUsageLimitsDict.ContainsKey(pinfo.Name))
             {
-                TimeSpan appLimit = appUsageLimitsDict[appTitle].UsageLimitsPerDay[dtnow.DayOfWeek]; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
+                TimeSpan appLimit = appUsageLimitsDict[pinfo.Name].UsageLimitsPerDay[dtnow.DayOfWeek]; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
 
-                remainingTime = appLimit - appUsagePerDay[appTitle];
+                remainingTime = appLimit - pinfo.DurationF;
             }
 
             string signn = remainingTime < TimeSpan.Zero ? "-" : "";
 
-            string logEntry = $"{dtnow}: used:{appUsagePerDay[appTitle].ToString("hh\\:mm\\:ss")}, remains:{signn}{remainingTime.ToString("hh\\:mm\\:ss")}, {appTitle}";
+            string logEntry = $"{dtnow}: used:{pinfo.DurationF.ToString("hh\\:mm\\:ss")}, remains:{signn}{remainingTime.ToString("hh\\:mm\\:ss")}, {pinfo.Name}";
 
             try
             { 
@@ -783,30 +755,30 @@ namespace TrackerAppService
             }
         }
 
-        private void CheckUsageLimit(string appTitle, int pid)
+        private void CheckUsageLimit(ProcessInfo pinfo)
         {
-            if (appUsagePerDay.ContainsKey(appTitle) && appUsageLimitsDict.ContainsKey(appTitle))
+            if (appUsageLimitsDict.ContainsKey(pinfo.Name))
             {
                 DateTime dtnow = DateTime.Now;
 
-                var appCfg = appUsageLimitsDict[appTitle];
+                var appCfg = appUsageLimitsDict[pinfo.Name];
 
                 TimeSpan appLimit = appCfg.UsageLimitsPerDay[dtnow.DayOfWeek]; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
 
-                TimeSpan remainingTime = appLimit - appUsagePerDay[appTitle];
+                TimeSpan remainingTime = appLimit - pinfo.Duration;
 
-                if (remainingTime <= TimeSpan.FromMinutes(5) && !warnedApps.Contains(appTitle))
+                if (remainingTime <= TimeSpan.FromMinutes(5) && !warnedApps.Contains(pinfo.Name))
                 {
-                    ShowWarningDialog(appTitle, remainingTime);
-                    warnedApps.Add(appTitle);
+                    ShowWarningDialog(pinfo.Name, remainingTime);
+                    warnedApps.Add(pinfo.Name);
                 }
 
                 TimeSpan timeNow = dtnow - dtnow.Date;
 
-                if (appCfg.ActiveToTime - TimeSpan.FromMinutes(5) <= timeNow && !warnedApps.Contains(appTitle))
+                if (appCfg.ActiveToTime - TimeSpan.FromMinutes(5) <= timeNow && !warnedApps.Contains(pinfo.Name))
                 {
-                    ShowWarningDialog(appTitle, remainingTime);
-                    warnedApps.Add(appTitle);
+                    ShowWarningDialog(pinfo.Name, remainingTime);
+                    warnedApps.Add(pinfo.Name);
                 }
 
                 if (appCfg.ActiveToTime <= timeNow || appCfg.ActiveFromTime > timeNow)
@@ -816,7 +788,7 @@ namespace TrackerAppService
 
                 if (remainingTime <= TimeSpan.Zero)
                 {
-                    KillApplication(appTitle, pid);
+                    KillApplication(pinfo);
                 }
             }
         }
@@ -834,22 +806,22 @@ namespace TrackerAppService
 
         }
 
-        private void KillApplication(string appTitle, int pid)
+        private void KillApplication(ProcessInfo pinfo)
         {
-            var process = Process.GetProcessById(pid); // GetProcessesByName(appTitle)) // .Where(p => p.Id == pid))
+            var process = Process.GetProcessById(pinfo.PID); // GetProcessesByName(appTitle)) // .Where(p => p.Id == pid))
             
             if (process != null)
             {
                 process.Kill();
 
-                string message = $"Usage time for {appTitle.ToUpper()} is expired for today!";
-                string title = $"{appTitle.ToUpper()} Usage Limit Expired";
+                string message = $"Usage time for {pinfo.Name.ToUpper()} is expired for today!";
+                string title = $"{pinfo.Name.ToUpper()} Usage Limit Expired";
 
                 new ProcessServices().StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + $" app-notify \"{title}\" \"{message}\"");
             }
             else
             {
-                EventLog.WriteEntry("TrackerAppService", $"Failed to stop process name: {appTitle}, id: {pid}", EventLogEntryType.Error);
+                EventLog.WriteEntry("TrackerAppService", $"Failed to stop process name: {pinfo.Name}, id: {pinfo.PID}", EventLogEntryType.Error);
             }
         }
 
@@ -860,9 +832,9 @@ namespace TrackerAppService
                 using (StreamWriter writer = new StreamWriter(logFilePath, true))
                 {
                     writer.WriteLine("\nApplication Usage Summary:");
-                    foreach (var entry in appUsagePerDay)
+                    foreach (var entry in processMap)
                     {
-                        writer.WriteLine($"{entry.Key}: {entry.Value}");
+                        writer.WriteLine($"User {entry.Value.User}: Application: {entry.Value.Name}: Duration: {entry.Value.Duration.TotalMinutes}");
                     }
                 }
 
@@ -879,7 +851,13 @@ namespace TrackerAppService
             {
                 System.IO.File.WriteAllText(lastResetDateFilePath, lastResetDate.ToString("yyyy-MM-dd"));
 
-                string json = JsonSerializer.Serialize(appUsagePerDay, new JsonSerializerOptions { WriteIndented = true });
+                ProcessUsageCache processCache = new ProcessUsageCache
+                {
+                    ProcessMap = processMap,
+                    ProcessKeyMap = processKeyMap,
+                };
+
+                string json = JsonSerializer.Serialize(processCache, new JsonSerializerOptions { WriteIndented = true });
                 System.IO.File.WriteAllText(appUsageFilePath, json);
 
                 if (InfluxPointBuff.Count > 0)
@@ -913,7 +891,7 @@ namespace TrackerAppService
 
         private void LoadUsageAndCacheFromFIle()
         {
-            appUsagePerDay.Clear();
+            processMap.Clear();
 
             lastResetDate = DateTime.Now.Date;
 
@@ -934,11 +912,24 @@ namespace TrackerAppService
             if (System.IO.File.Exists(appUsageFilePath))
             {
                 string json = System.IO.File.ReadAllText(appUsageFilePath);
-                appUsagePerDay = JsonSerializer.Deserialize<Dictionary<string, TimeSpan>>(json) ?? new Dictionary<string, TimeSpan>();
+                ProcessUsageCache processCache = JsonSerializer.Deserialize<ProcessUsageCache>(json) ?? new ProcessUsageCache();
+
+                processMap = processCache.ProcessMap != null? processCache.ProcessMap : new ConcurrentDictionary<string, ProcessInfo>();
+                processKeyMap = processCache.ProcessKeyMap != null? processCache.ProcessKeyMap : new ConcurrentDictionary<int, string>();
             }
             else
             {
-                string json = JsonSerializer.Serialize(appUsagePerDay, new JsonSerializerOptions { WriteIndented = true });
+
+                processMap = processMap != null ? processMap : new ConcurrentDictionary<string, ProcessInfo>();
+                processKeyMap = processKeyMap != null ? processKeyMap : new ConcurrentDictionary<int, string>();
+
+                ProcessUsageCache processCache = new ProcessUsageCache
+                {
+                    ProcessMap = processMap,
+                    ProcessKeyMap = processKeyMap,
+                };
+
+                string json = JsonSerializer.Serialize(processCache, new JsonSerializerOptions { WriteIndented = true });
                 System.IO.File.WriteAllText(appUsageFilePath, json);
             }
 
@@ -985,6 +976,7 @@ namespace TrackerAppService
 
         }
 
+        /*
         private static async Task RunPipeServerAsync(IProgress<Dictionary<string, int>> progress, CancellationToken ct)
         {
             EventLog.WriteEntry("TrackerAppService", $"Task started", EventLogEntryType.SuccessAudit);
@@ -1028,6 +1020,7 @@ namespace TrackerAppService
 
             EventLog.WriteEntry("TrackerAppService", $"Task exit", EventLogEntryType.SuccessAudit);
         }
+        */
 
         public string GetLocalIPAddress()
         {
@@ -1042,34 +1035,7 @@ namespace TrackerAppService
             return "";
         }
 
-        /*
-        private static User UserInformation(int sessionId)
-        {
-            IntPtr buffer;
-            int length;
 
-            var user = new User();
-
-            if (NativeMethods.WTSQuerySessionInformation(IntPtr.Zero, sessionId, NativeMethods.WTS_INFO_CLASS.WTSUserName, out buffer, out length) && length > 1)
-            {
-                user.Name = Marshal.PtrToStringAnsi(buffer);
-
-                NativeMethods.WTSFreeMemory(buffer);
-                if (NativeMethods.WTSQuerySessionInformation(IntPtr.Zero, sessionId, NativeMethods.WTS_INFO_CLASS.WTSDomainName, out buffer, out length) && length > 1)
-                {
-                    user.Domain = Marshal.PtrToStringAnsi(buffer);
-                    NativeMethods.WTSFreeMemory(buffer);
-                }
-            }
-
-            if (user.Name.Length == 0)
-            {
-                return null;
-            }
-
-            return user;
-        }
-        */
 
     }
 }

@@ -627,7 +627,7 @@ namespace TrackerAppService
         public static async Task HomeRoute(HttpContextBase ctx)
         {
             
-            var newDictionary = appService.appUsagePerDay.ToDictionary(entry => entry.Key, entry => entry.Value);
+            var newDictionary = appService.processMap.ToDictionary(entry => entry.Key, entry => entry.Value);
 
             DateTime dtnow = DateTime.Now;
             string trows = "";
@@ -635,11 +635,11 @@ namespace TrackerAppService
             {
                 string tdstyle = "";
                 AppLimitConfig appLimit = new AppLimitConfig();
-                appLimit.initDefault(appUsage.Key);
+                appLimit.initDefault(appUsage.Value.Name);
 
-                if (appService.appUsageLimitsDict.ContainsKey(appUsage.Key))
+                if (appService.appUsageLimitsDict.ContainsKey(appUsage.Value.Name))
                 {
-                    appLimit = appService.appUsageLimitsDict[appUsage.Key];
+                    appLimit = appService.appUsageLimitsDict[appUsage.Value.Name];
                     tdstyle = "style='background-color: lightgreen;'";
                 }
 
@@ -648,19 +648,19 @@ namespace TrackerAppService
 
                 tsLimit = tsLimit > tsWindow ? tsWindow : tsLimit;
 
-                double usagePct = appUsage.Value.TotalMinutes < tsLimit.TotalMinutes ? appUsage.Value.TotalMinutes/tsLimit.TotalMinutes *100 : 100;
+                double usagePct = appUsage.Value.DurationF.TotalMinutes < tsLimit.TotalMinutes ? appUsage.Value.DurationF.TotalMinutes/tsLimit.TotalMinutes *100 : 100;
 
                 TimeSpan timeNow = dtnow - dtnow.Date;
                 double fromPct = appLimit.ActiveFromTime > timeNow ? 100 : 0;
                 double toPct   = appLimit.ActiveToTime <= timeNow ? 100 : 0;
 
-                trows += $"<tr><td>{appUsage.Key}</td>" +
+                trows += $"<tr><td>{appUsage.Value.Name}</td>" +
                     $"<td style='z-index: 1;'><div class='bg' style='width: {usagePct:0.##}%;'></div>{usagePct:0.##}</td>" +
-                    $"<td>{appUsage.Value}</td>" +
+                    $"<td>{appUsage.Value.DurationF:hh\\:mm}</td>" +
                     $"<td>{appLimit.UsageLimitsPerDay[dtnow.DayOfWeek]:hh\\:mm} / {tsWindow:hh\\:mm}</td>" +
                     $"<td style='z-index: 1;'><div class='bg' style='background-color: #ff9900; width: {fromPct:0.##}%;'></div> {appLimit.ActiveFromTime:hh\\:mm}</td>" +
                     $"<td style='z-index: 1;'><div class='bg' style='background-color: #ff9900; width: {toPct:0.##}%;'></div> {appLimit.ActiveToTime:hh\\:mm}</td>" +
-                    $"<td {tdstyle}>{appService.appUsageLimitsDict.ContainsKey(appUsage.Key)}</td></tr>";
+                    $"<td {tdstyle}>{appService.appUsageLimitsDict.ContainsKey(appUsage.Value.Name)}</td></tr>";
             }
 
             string links = isAuthorized(ctx)? "<li><a href='/settings'>Settings</a></li><li><a href='/remoteapps'>Remote apps</a></li><li><a href='/logout'>Logout</a></li>" : "<li><a href='/login'>Login</a></li>";
