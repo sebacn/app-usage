@@ -631,7 +631,7 @@ namespace TrackerAppService
 
             DateTime dtnow = DateTime.Now;
             string trows = "";
-            foreach (var appUsage in newDictionary)
+            foreach (var appUsage in newDictionary.Where(p => p.Value.IsActive == true))
             {
                 string tdstyle = "";
                 AppLimitConfig appLimit = new AppLimitConfig();

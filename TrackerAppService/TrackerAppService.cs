@@ -36,9 +36,9 @@ using Windows.System;
 using Windows.UI.Composition;
 //using Windows.UI.Xaml.Shapes;
 
-namespace TrackerAppService 
+namespace TrackerAppService
 {
-    
+
 
     public class SettingsInflux
     {
@@ -54,7 +54,7 @@ namespace TrackerAppService
         private byte[] CertPassCRT { get; set; } = new byte[10];
         [JsonInclude]
         private byte[] EntrCRT { get; set; } = new byte[20];
-        
+
 
         public SettingsInflux()
         {
@@ -124,11 +124,13 @@ namespace TrackerAppService
 
     }
 
+    /*
     public class ProcessUsageCache
     {
         public ConcurrentDictionary<string, ProcessInfo> ProcessMap { get; set; }
         public ConcurrentDictionary<int, string> ProcessKeyMap { get; set; }
     }
+    */
 
     public class ProcessInfo
     {
@@ -140,7 +142,7 @@ namespace TrackerAppService
         public DateTime EndTime { get; set; }
         public TimeSpan Duration { get; set; }
         public bool IsActive { get; set; } = false;
-        public bool IsUpdated { get; set; } = false;
+        //public bool IsUpdated { get; set; } = false;
 
         public TimeSpan DurationF
         {
@@ -173,7 +175,9 @@ namespace TrackerAppService
         public String AppName { get; set; }
         public TimeSpan ActiveFromTime { get; set; }
         public TimeSpan ActiveToTime { get; set; }
-        public  Dictionary<DayOfWeek, TimeSpan> UsageLimitsPerDay { get; set; }
+        public Dictionary<DayOfWeek, TimeSpan> UsageLimitsPerDay { get; set; }
+        public int NotifyCntBeforeClose { get; set; }
+        public int NotifyIntervalMinutes { get; set; }
 
         public void initDefault(string _appName)
         {
@@ -187,7 +191,7 @@ namespace TrackerAppService
             {
                 DayOfWeek dow = (DayOfWeek)i;
                 UsageLimitsPerDay.Add(dow, TimeSpan.FromHours(24) + TimeSpan.FromMinutes(-1));
-            } 
+            }
         }
     }
 
@@ -209,7 +213,16 @@ namespace TrackerAppService
 
         private System.Timers.Timer timer1min;
         //public Dictionary<string, TimeSpan> appUsagePerDay = new Dictionary<string, TimeSpan>();
-        private HashSet<string> warnedApps = new HashSet<string>();
+        //private HashSet<string> warnedApps = new HashSet<string>();
+
+        public struct NotifyStruct
+        {
+            public int NotifyCount;
+            public DateTime NotifyTime;
+        }
+
+        public Dictionary<string, NotifyStruct> warnedApps = new Dictionary<string, NotifyStruct> ();
+
         //private HashSet<string> trackedApps = new HashSet<string>();
         public DateTime lastResetDate = DateTime.Now.Date;
         //CancellationTokenSource pipeServerCTS = new CancellationTokenSource();
@@ -228,8 +241,8 @@ namespace TrackerAppService
 
         Dictionary<DateTime, List<DataPoint>> InfluxPointBuff = new Dictionary<DateTime, List<DataPoint>>();
         public Dictionary<string, AppLimitConfig> appUsageLimitsDict = new Dictionary<string, AppLimitConfig>();
-        public ConcurrentDictionary<string, ProcessInfo> processMap = new ConcurrentDictionary<string, ProcessInfo>();
-        public ConcurrentDictionary<int, string> processKeyMap = new ConcurrentDictionary<int, string>();
+        public ConcurrentDictionary<int, ProcessInfo> processMap = new ConcurrentDictionary<int, ProcessInfo>();
+        //public ConcurrentDictionary<int, string> processKeyMap = new ConcurrentDictionary<int, string>();
 
         public SettingsInflux influxConfig = null;
 
@@ -269,7 +282,7 @@ namespace TrackerAppService
 
             DateTime dtnow = DateTime.Now;
 
-            foreach (var entry in processMap.Where(k => k.Value.IsUpdated == true))
+            foreach (var entry in processMap.Where(k => k.Value.IsActive == true))
             {
                 TimeSpan tslimit = TimeSpan.FromDays(1);
 
@@ -292,13 +305,15 @@ namespace TrackerAppService
 
             InfluxPointBuff.Add(dt, ret);
 
+            /*
             //remove zero items
-            List<string> keys = new List<string>(processMap.Keys);
+            List<int> keys = new List<int>(processMap.Keys);
 
-            foreach (string key in keys.Where(k => processMap[k].IsUpdated == true))
+            foreach (int key in keys.Where(k => processMap[k].IsUpdated == true))
             {
                 processMap[key].IsUpdated = false;
             }
+            */
 
             //log
             if (InfluxPointBuff.ContainsKey(dt) && InfluxPointBuff[dt].Count > 0 && LogDataPoint)
@@ -555,13 +570,13 @@ namespace TrackerAppService
 
             ProcessInfo pinfo = null;
 
-            string skey = $"{user}-{name}";
+            //string skey = $"{user}-{name}";
 
-            processKeyMap[pid] = skey;
+            //processKeyMap[pid] = skey;
 
-            if (processMap.ContainsKey(skey))
+            if (processMap.ContainsKey(pid))
             {
-                pinfo = processMap[skey];
+                pinfo = processMap[pid];
                 pinfo.StartTime = DateTime.Now;
             }
             else
@@ -578,7 +593,7 @@ namespace TrackerAppService
 
             pinfo.IsActive = true;
 
-            processMap[skey] = pinfo;
+            processMap[pid] = pinfo;
 
             LogUsage(pinfo);
             CheckUsageLimit(pinfo);
@@ -595,20 +610,17 @@ namespace TrackerAppService
 
             if (sessionId == 0) { return; }
 
-            if (processKeyMap.ContainsKey(pid))
-            {
-                if (processKeyMap.TryRemove(pid, out string skey))
-                {
-                    var pinfo = processMap[skey];
+            if (processMap.ContainsKey(pid))
+            {                
+                var pinfo = processMap[pid];
 
-                    pinfo.EndTime = DateTime.Now;
-                    pinfo.IsActive = false;
-                    pinfo.Duration = pinfo.Duration + (pinfo.EndTime - pinfo.StartTime);
+                pinfo.EndTime = DateTime.Now;
+                pinfo.IsActive = false;
+                pinfo.Duration = pinfo.Duration + (pinfo.EndTime - pinfo.StartTime);
 
-                    processMap[skey] = pinfo;
+                processMap[pid] = pinfo;
 
-                    LogUsage(pinfo);
-                }
+                LogUsage(pinfo);
             }
 
             //EventLog.WriteEntry("TrackerAppService", $"END: {name}, PID={pid}, Session={sessionId}, User={user}", EventLogEntryType.Information);
@@ -670,9 +682,7 @@ namespace TrackerAppService
             }
 
             EventLog.WriteEntry("TrackerAppService", $"sid:{desc.SessionId}, {desc.Reason}", EventLogEntryType.Information);
-        }
-
-        
+        }        
 
         private void Timer1minElapsed(object sender, ElapsedEventArgs e)
         {
@@ -683,11 +693,9 @@ namespace TrackerAppService
                 SendDataToInfluxDB();
             }
 
-            List<string> keys = new List<string>(processMap.Keys);
-
-            foreach (string key in keys)
+            foreach(var proc in processMap.Where(p => p.Value.IsActive == true))
             {
-                CheckUsageLimit(processMap[key]);
+                CheckUsageLimit(proc.Value);
             }
             
         }
@@ -704,7 +712,23 @@ namespace TrackerAppService
                
                 AddInfluxPointData(newDate.AddMinutes(-1).ToUniversalTime());
 
-                processMap = new ConcurrentDictionary<string, ProcessInfo>();
+                Process[] processList = Process.GetProcesses();
+
+                
+
+                foreach (var proc in processMap)
+                {
+                    if (!proc.Value.IsActive 
+                     || !processList.Any(p => p.Id == proc.Key))
+                    {
+                        processMap.TryRemove(proc.Key, out _);
+                    }
+                    else
+                    {
+                        proc.Value.StartTime = DateTime.Now;
+                        proc.Value.Duration = TimeSpan.Zero;
+                    }
+                }
 
                 AddInfluxPointData(newDate.ToUniversalTime()); //new Date 00.00.00
 
@@ -719,8 +743,6 @@ namespace TrackerAppService
                 {
                     EventLog.WriteEntry("TrackerAppService", $"{ex.Message}, trace: {ex.StackTrace}", EventLogEntryType.Error);
                 }
-
-                
 
                 SaveUsageAndCacheToFIle();
             }
@@ -765,28 +787,37 @@ namespace TrackerAppService
 
                 TimeSpan appLimit = appCfg.UsageLimitsPerDay[dtnow.DayOfWeek]; // DayOfWeek.Sunday 0 to DayOfWeek.Saturday 6 
 
-                TimeSpan remainingTime = appLimit - pinfo.Duration;
-
-                if (remainingTime <= TimeSpan.FromMinutes(5) && !warnedApps.Contains(pinfo.Name))
-                {
-                    ShowWarningDialog(pinfo.Name, remainingTime);
-                    warnedApps.Add(pinfo.Name);
-                }
+                TimeSpan remainingTime = appLimit - pinfo.DurationF;
 
                 TimeSpan timeNow = dtnow - dtnow.Date;
-
-                if (appCfg.ActiveToTime - TimeSpan.FromMinutes(5) <= timeNow && !warnedApps.Contains(pinfo.Name))
-                {
-                    ShowWarningDialog(pinfo.Name, remainingTime);
-                    warnedApps.Add(pinfo.Name);
-                }
 
                 if (appCfg.ActiveToTime <= timeNow || appCfg.ActiveFromTime > timeNow)
                 {
                     remainingTime = TimeSpan.Zero;
                 }
 
-                if (remainingTime <= TimeSpan.Zero)
+                if (remainingTime <= TimeSpan.Zero) //remainingTime <= TimeSpan.FromMinutes(5) && !warnedApps.Contains(pinfo.Name))
+                {
+                    if (!warnedApps.ContainsKey(pinfo.Name))
+                    {
+                        warnedApps.Add(pinfo.Name, new NotifyStruct{ NotifyCount = 1, NotifyTime = dtnow});
+                        ShowWarningDialog(pinfo);
+                    }
+                    else 
+                    {
+                        var notifys = warnedApps[pinfo.Name];
+
+                        if ((dtnow - notifys.NotifyTime).TotalMinutes >= appCfg.NotifyIntervalMinutes)
+                        {
+                            notifys.NotifyTime = dtnow;
+                            notifys.NotifyCount++;
+                            warnedApps[pinfo.Name] = notifys;
+                            ShowWarningDialog(pinfo);
+                        }
+                    }
+                }
+
+                if (remainingTime <= TimeSpan.Zero && warnedApps[pinfo.Name].NotifyCount >= appCfg.NotifyCntBeforeClose)
                 {
                     KillApplication(pinfo);
                 }
@@ -794,15 +825,15 @@ namespace TrackerAppService
         }
 
 
-        private void ShowWarningDialog(string appTitle, TimeSpan remainingTime)
+        private void ShowWarningDialog(ProcessInfo pinfo)
         {
-            string message = $"Warning: Your usage time for {appTitle.ToUpper()} will expire in 5 minutes!";
-            string title = $"{appTitle.ToUpper()} Usage Limit";
+            string message = $"Warning: Your usage time for {pinfo.Name.ToUpper()} expired!";
+            string title = $"{pinfo.Name.ToUpper()} Usage Limit";
             //MessageBox.Show(message, "Usage Limit Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
             //new ProcessServices().StartProcessAsCurrentUser(Process.GetCurrentProcess().MainModule.FileName + $" app-notify \"{title}\" \"{message}\"");
             var ps1File = "msgNotify.ps1";
-            SessionProcessLauncher.RunProcessInActiveSession("powershell.exe", 0, $"-NoProfile -ExecutionPolicy ByPass -File \"{ps1File}\" -mtitle \"{title}\" -mtext \"{message}\"");
+            SessionProcessLauncher.RunProcessInActiveSession("powershell.exe", (uint)pinfo.SessionId, $"-NoProfile -ExecutionPolicy ByPass -File \"{ps1File}\" -mtitle \"{title}\" -mtext \"{message}\"");
 
         }
 
@@ -851,13 +882,7 @@ namespace TrackerAppService
             {
                 System.IO.File.WriteAllText(lastResetDateFilePath, lastResetDate.ToString("yyyy-MM-dd"));
 
-                ProcessUsageCache processCache = new ProcessUsageCache
-                {
-                    ProcessMap = processMap,
-                    ProcessKeyMap = processKeyMap,
-                };
-
-                string json = JsonSerializer.Serialize(processCache, new JsonSerializerOptions { WriteIndented = true });
+                string json = JsonSerializer.Serialize(processMap, new JsonSerializerOptions { WriteIndented = true });
                 System.IO.File.WriteAllText(appUsageFilePath, json);
 
                 if (InfluxPointBuff.Count > 0)
@@ -912,24 +937,18 @@ namespace TrackerAppService
             if (System.IO.File.Exists(appUsageFilePath))
             {
                 string json = System.IO.File.ReadAllText(appUsageFilePath);
-                ProcessUsageCache processCache = JsonSerializer.Deserialize<ProcessUsageCache>(json) ?? new ProcessUsageCache();
+                processMap = JsonSerializer.Deserialize<ConcurrentDictionary<int, ProcessInfo>>(json) ?? new ConcurrentDictionary<int, ProcessInfo>();
 
-                processMap = processCache.ProcessMap != null? processCache.ProcessMap : new ConcurrentDictionary<string, ProcessInfo>();
-                processKeyMap = processCache.ProcessKeyMap != null? processCache.ProcessKeyMap : new ConcurrentDictionary<int, string>();
+                //processMap = processCache.ProcessMap != null? processCache.ProcessMap : new ConcurrentDictionary<string, ProcessInfo>();
+                //processKeyMap = processCache.ProcessKeyMap != null? processCache.ProcessKeyMap : new ConcurrentDictionary<int, string>();
             }
             else
             {
 
-                processMap = processMap != null ? processMap : new ConcurrentDictionary<string, ProcessInfo>();
-                processKeyMap = processKeyMap != null ? processKeyMap : new ConcurrentDictionary<int, string>();
+                processMap = processMap != null ? processMap : new ConcurrentDictionary<int, ProcessInfo>();
+                //processKeyMap = processKeyMap != null ? processKeyMap : new ConcurrentDictionary<int, string>();
 
-                ProcessUsageCache processCache = new ProcessUsageCache
-                {
-                    ProcessMap = processMap,
-                    ProcessKeyMap = processKeyMap,
-                };
-
-                string json = JsonSerializer.Serialize(processCache, new JsonSerializerOptions { WriteIndented = true });
+                string json = JsonSerializer.Serialize(processMap, new JsonSerializerOptions { WriteIndented = true });
                 System.IO.File.WriteAllText(appUsageFilePath, json);
             }
 

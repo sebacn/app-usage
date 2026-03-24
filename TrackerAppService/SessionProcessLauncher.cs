@@ -1,5 +1,6 @@
 ﻿using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -28,7 +29,14 @@ public static class SessionProcessLauncher
         {
             // Query the user token for the active session
             if (!WTSQueryUserToken(userSessionId, out userToken))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "WTSQueryUserToken failed.");
+            {
+                var exp = new Win32Exception(Marshal.GetLastWin32Error(), "WTSQueryUserToken failed.");
+
+                EventLog.WriteEntry("TrackerAppService", $"Exception (Win32): {exp.NativeErrorCode}, trace: {exp.Message}", EventLogEntryType.Error);
+
+                throw exp;
+            }
+                
 
             // Duplicate to get a primary token (required for CreateProcessAsUser)
             const uint TOKEN_ASSIGN_PRIMARY = 0x0001;
