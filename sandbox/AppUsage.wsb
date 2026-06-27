@@ -1,0 +1,14 @@
+<Configuration>
+  <VGpu>Disable</VGpu>
+  <Networking>Enable</Networking>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\path\to\app-usage</HostFolder>
+      <SandboxFolder>C:\app-usage</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -ExecutionPolicy Bypass -NoProfile -File "C:\app-usage\sandbox\build-and-test.ps1" -Configuration Debug</Command>
+  </LogonCommand>
+</Configuration>
